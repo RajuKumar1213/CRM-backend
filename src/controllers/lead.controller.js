@@ -1,0 +1,339 @@
+import asyncHandler from '../utils/asyncHandler.js';
+
+import { ApiResponse } from '../utils/ApiResponse.js';
+import { ApiError } from '../utils/ApiError.js';
+import { assignLeadToNextEmployee } from '../utils/leadRotation.js';
+import { scheduleFollowUp } from '../utils/followUpScheduler.js';
+import { getNextContactNumber } from '../utils/numberRotation.js';
+import { Lead } from '../models/Lead.models.js';
+import { FollowUp } from '../models/FollowUp.models.js';
+import { Activity } from '../models/Activity.models.js';
+import { CompanySetting } from '../models/CompanySettings.models.js';
+
+// @desc    Get all leads
+// @route   GET /api/v1/leads
+// @access  Private
+const getLeads = asyncHandler(async (req, res, next) => {
+  let query;
+
+  // Copy req.query
+  const reqQuery = { ...req.query };
+
+  // Fields to exclude
+  const removeFields = ['select', 'sort', 'page', 'limit'];
+
+  // Loop over removeFields and delete them from reqQuery
+  removeFields.forEach((param) => delete reqQuery[param]);
+
+  // If user is not admin, only show leads assigned to them
+  if (req.user.role !== 'admin') {
+    reqQuery.assignedTo = req.user._id;
+  }
+
+  // Create query string
+  let queryStr = JSON.stringify(reqQuery);
+
+  // Create operators ($gt, $gte, etc)
+  queryStr = queryStr.replace(
+    /\b(gt|gte|lt|lte|in)\b/g,
+    (match) => `$${match}`
+  );
+
+  // Finding resource
+  query = Lead.find(JSON.parse(queryStr)).populate('assignedTo', 'name email');
+
+  // Select Fields
+  if (req.query.select) {
+    const fields = req.query.select.split(',').join(' ');
+    query = query.select(fields);
+  }
+
+  // Sort
+  if (req.query.sort) {
+    const sortBy = req.query.sort.split(',').join(' ');
+    query = query.sort(sortBy);
+  } else {
+    query = query.sort('-createdAt');
+  }
+
+  // Pagination
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 25;
+  const startIndex = (page - 1) * limit;
+  const endIndex = page * limit;
+  const total = await Lead.countDocuments(JSON.parse(queryStr));
+
+  query = query.skip(startIndex).limit(limit);
+
+  // Executing query
+  const leads = await query;
+
+  // Pagination result
+  const pagination = {};
+
+  if (endIndex < total) {
+    pagination.next = {
+      page: page + 1,
+      limit,
+    };
+  }
+
+  if (startIndex > 0) {
+    pagination.prev = {
+      page: page - 1,
+      limit,
+    };
+  }
+
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { leads, count: leads.length, pagination },
+        'Leads fetched successfully'
+      )
+    );
+});
+
+// @desc    Get single lead
+// @route   GET /api/v1/leads/:id
+// @access  Privat
+//
+
+const getLead = asyncHandler(async (req, res, next) => {
+  const { leadId } = req.params;
+
+  const lead = await Lead.findById(leadId).populate('assignedTo', 'name email');
+
+  if (!lead) {
+    throw new ApiError(404, 'Lead not found');
+  }
+
+  // Make sure user is lead owner or admin
+  if (
+    lead.assignedTo.toString() !== req.user._id &&
+    req.user.role !== 'admin'
+  ) {
+    throw new ApiError(401, 'User is not authorized to view this lead');
+  }
+
+  // Get follow-ups and activities for this lead
+  const followUps = await FollowUp.find({ lead: leadId })
+    .sort('-scheduled')
+    .populate('assignedTo', 'name');
+  const activities = await Activity.find({ lead: leadId})
+    .sort('-createdAt')
+    .populate('user', 'name');
+
+  // Create response object with all related data
+  const response = {
+    success: true,
+    data: {
+      lead,
+      followUps,
+      activities,
+    },
+  };
+
+  res.status(200).json(response);
+});
+
+// @desc    Create new lead
+// @route   POST /api/v1/leads
+// @access  Private
+const createLead = asyncHandler(async (req, res, next) => {
+  // Add user to req.body
+  req.body.assignedTo = req.user.id;
+
+  // Check for lead rotation settings
+  const settings = await CompanySetting.findOne();
+
+  // If auto-rotation is enabled and user is admin, use rotation logic
+  if (settings && settings.leadRotationEnabled && req.user.role === 'admin') {
+    const nextEmployee = await assignLeadToNextEmployee(req.body);
+    req.body.assignedTo = nextEmployee._id;
+  }
+
+  const lead = await Lead.create(req.body);
+
+  // Schedule initial follow-up if desired (default: 1 day)
+  if (req.body.scheduleFollowUp !== false) {
+    await scheduleFollowUp(
+      lead,
+      lead.assignedTo,
+      req.body.followUpType || 'call',
+      req.body.followUpInterval || null
+    );
+  }
+
+  res.status(201).json({
+    success: true,
+    data: lead,
+  });
+});
+
+// @desc    Update lead
+// @route   PUT /api/v1/leads/:id
+// @access  Private
+const updateLead = asyncHandler(async (req, res, next) => {
+  let lead = await Lead.findById(req.params.id);
+
+  if (!lead) {
+    return next(
+      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
+    );
+  }
+
+  // Make sure user is lead owner or admin
+  if (lead.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
+    return next(
+      new ErrorResponse(
+        `User ${req.user.id} is not authorized to update this lead`,
+        401
+      )
+    );
+  }
+
+  // Check if status is being updated
+  const statusChanged = req.body.status && req.body.status !== lead.status;
+  const oldStatus = lead.status;
+
+  lead = await Lead.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+    runValidators: true,
+  });
+
+  // If status changed, create an activity record
+  if (statusChanged) {
+    await Activity.create({
+      lead: lead._id,
+      user: req.user.id,
+      type: 'note',
+      status: 'completed',
+      notes: `Lead status changed from ${oldStatus} to ${lead.status}`,
+    });
+
+    // Schedule follow-up based on new status if auto follow-up is enabled
+    const settings = await CompanySetting.findOne();
+    if (
+      settings &&
+      settings.autoFollowupEnabled &&
+      lead.status !== 'closed-won' &&
+      lead.status !== 'closed-lost'
+    ) {
+      await scheduleFollowUp(
+        lead,
+        lead.assignedTo,
+        'call',
+        settings.defaultFollowupIntervals[lead.status] || 2
+      );
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    data: lead,
+  });
+});
+
+// @desc    Delete lead
+// @route   DELETE /api/v1/leads/:id
+// @access  Private
+const deleteLead = asyncHandler(async (req, res, next) => {
+  const lead = await Lead.findById(req.params.id);
+
+  if (!lead) {
+    return next(
+      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
+    );
+  }
+
+  // Make sure user is lead owner or admin
+  if (lead.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
+    return next(
+      new ErrorResponse(
+        `User ${req.user.id} is not authorized to delete this lead`,
+        401
+      )
+    );
+  }
+
+  // Delete lead and all related records (follow-ups, activities, etc.)
+  await Promise.all([
+    lead.remove(),
+    FollowUp.deleteMany({ lead: req.params.id }),
+    Activity.deleteMany({ lead: req.params.id }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {},
+  });
+});
+
+// @desc    Assign lead to user
+// @route   PUT /api/v1/leads/:id/assign
+// @access  Private/Admin
+const assignLead = asyncHandler(async (req, res, next) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return next(new ErrorResponse('Please provide a user ID', 400));
+  }
+
+  let lead = await Lead.findById(req.params.id);
+
+  if (!lead) {
+    return next(
+      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
+    );
+  }
+
+  // Make sure user is admin
+  if (req.user.role !== 'admin') {
+    return next(
+      new ErrorResponse(
+        `User ${req.user.id} is not authorized to assign leads`,
+        401
+      )
+    );
+  }
+
+  // Update the lead's assigned user
+  lead = await Lead.findByIdAndUpdate(
+    req.params.id,
+    { assignedTo: userId },
+    {
+      new: true,
+      runValidators: true,
+    }
+  );
+
+  // Create activity log
+  await Activity.create({
+    lead: lead._id,
+    user: req.user.id,
+    type: 'note',
+    status: 'completed',
+    notes: `Lead assigned to new employee`,
+  });
+
+  // Create notification for the new assignee
+  const notificationService = require('../utils/notificationService');
+  await notificationService.createNotification(
+    userId,
+    'Lead Assigned',
+    `A lead (${lead.name}) has been assigned to you.`,
+    'assignment',
+    lead._id,
+    'Lead'
+  );
+
+  res.status(200).json({
+    success: true,
+    data: lead,
+  });
+});
+
+export { getLeads, getLead, createLead, updateLead, deleteLead, assignLead };
