@@ -1,6 +1,5 @@
-import {Notification} from "../models/Notification.models"
-import {User} from "../models/User.models"
-
+import { Notification } from '../models/Notification.models.js';
+import { User } from '../models/User.models.js';
 /**
  * Get unread notifications for a user
  * @param {String} userId - The ID of the user
@@ -9,8 +8,10 @@ import {User} from "../models/User.models"
 exports.getUnreadNotifications = async (userId) => {
   return Notification.find({
     user: userId,
-    isRead: false
-  }).sort('-createdAt').limit(50);
+    isRead: false,
+  })
+    .sort('-createdAt')
+    .limit(50);
 };
 
 /**
@@ -20,12 +21,11 @@ exports.getUnreadNotifications = async (userId) => {
  * @returns {Promise<Number>} - Number of notifications marked as read
  */
 
-
 exports.markNotificationsAsRead = async (userId, notificationIds) => {
   const result = await Notification.updateMany(
-    { 
+    {
       _id: { $in: notificationIds },
-      user: userId 
+      user: userId,
     },
     { isRead: true }
   );
@@ -42,18 +42,25 @@ exports.markNotificationsAsRead = async (userId, notificationIds) => {
  * @param {String} onModel - Model name of related entity
  * @returns {Promise<Object>} - The created notification
  */
-exports.createNotification = async (userId, title, message, type = 'system', relatedTo = null, onModel = null) => {
+exports.createNotification = async (
+  userId,
+  title,
+  message,
+  type = 'system',
+  relatedTo = null,
+  onModel = null
+) => {
   const notification = {
     user: userId,
     title,
     message,
-    type
+    type,
   };
-  
+
   if (relatedTo && onModel) {
     notification.relatedTo = relatedTo;
     notification.onModel = onModel;
   }
-  
-  return Notification.create(notification)
-}
+
+  return Notification.create(notification);
+};

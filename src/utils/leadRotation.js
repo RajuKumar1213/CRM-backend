@@ -4,7 +4,7 @@ import { Notification } from '../models/Notification.models.js';
 import { ApiError } from './ApiError.js';
 import { ApiResponse } from './ApiResponse.js';
 
-/** 
+/**
  * Auto-rotate leads among employees
  * @param {Object} lead - The lead object to be assigned
  * @returns {Promise<Object>} - Assigned user

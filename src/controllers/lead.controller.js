@@ -4,7 +4,6 @@ import { ApiResponse } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import { assignLeadToNextEmployee } from '../utils/leadRotation.js';
 import { scheduleFollowUp } from '../utils/followUpScheduler.js';
-import { getNextContactNumber } from '../utils/numberRotation.js';
 import { Lead } from '../models/Lead.models.js';
 import { FollowUp } from '../models/FollowUp.models.js';
 import { Activity } from '../models/Activity.models.js';
@@ -14,86 +13,99 @@ import { CompanySetting } from '../models/CompanySettings.models.js';
 // @route   GET /api/v1/leads
 // @access  Private
 const getLeads = asyncHandler(async (req, res, next) => {
-  let query;
+  // let query;
 
-  // Copy req.query
-  const reqQuery = { ...req.query };
+  // // Copy req.query
+  // const reqQuery = { ...req.query };
 
-  // Fields to exclude
-  const removeFields = ['select', 'sort', 'page', 'limit'];
+  // // Fields to exclude
+  // const removeFields = ['select', 'sort', 'page', 'limit'];
 
-  // Loop over removeFields and delete them from reqQuery
-  removeFields.forEach((param) => delete reqQuery[param]);
+  // // Loop over removeFields and delete them from reqQuery
+  // removeFields.forEach((param) => delete reqQuery[param]);
 
-  // If user is not admin, only show leads assigned to them
-  if (req.user.role !== 'admin') {
-    reqQuery.assignedTo = req.user._id;
-  }
+  // // If user is not admin, only show leads assigned to them
+  // if (req.user.role !== 'admin') {
+  //   reqQuery.assignedTo = req.user._id;
+  // }
 
-  // Create query string
-  let queryStr = JSON.stringify(reqQuery);
+  // // Create query string
+  // let queryStr = JSON.stringify(reqQuery);
 
-  // Create operators ($gt, $gte, etc)
-  queryStr = queryStr.replace(
-    /\b(gt|gte|lt|lte|in)\b/g,
-    (match) => `$${match}`
-  );
+  // // Create operators ($gt, $gte, etc)
+  // queryStr = queryStr.replace(
+  //   /\b(gt|gte|lt|lte|in)\b/g,
+  //   (match) => `$${match}`
+  // );
 
-  // Finding resource
-  query = Lead.find(JSON.parse(queryStr)).populate('assignedTo', 'name email');
+  // // Finding resource
+  // query = Lead.find(JSON.parse(queryStr)).populate('assignedTo', 'name email');
 
-  // Select Fields
-  if (req.query.select) {
-    const fields = req.query.select.split(',').join(' ');
-    query = query.select(fields);
-  }
+  // // Select Fields
+  // if (req.query.select) {
+  //   const fields = req.query.select.split(',').join(' ');
+  //   query = query.select(fields);
+  // }
 
-  // Sort
-  if (req.query.sort) {
-    const sortBy = req.query.sort.split(',').join(' ');
-    query = query.sort(sortBy);
-  } else {
-    query = query.sort('-createdAt');
-  }
+  // // Sort
+  // if (req.query.sort) {
+  //   const sortBy = req.query.sort.split(',').join(' ');
+  //   query = query.sort(sortBy);
+  // } else {
+  //   query = query.sort('-createdAt');
+  // }
 
-  // Pagination
-  const page = parseInt(req.query.page, 10) || 1;
-  const limit = parseInt(req.query.limit, 10) || 25;
-  const startIndex = (page - 1) * limit;
-  const endIndex = page * limit;
-  const total = await Lead.countDocuments(JSON.parse(queryStr));
+  // // Pagination
+  // const page = parseInt(req.query.page, 10) || 1;
+  // const limit = parseInt(req.query.limit, 10) || 25;
+  // const startIndex = (page - 1) * limit;
+  // const endIndex = page * limit;
+  // const total = await Lead.countDocuments(JSON.parse(queryStr));
 
-  query = query.skip(startIndex).limit(limit);
+  // query = query.skip(startIndex).limit(limit);
 
-  // Executing query
-  const leads = await query;
+  // // Executing query
+  // const leads = await query;
 
-  // Pagination result
-  const pagination = {};
+  // // Pagination result
+  // const pagination = {};
 
-  if (endIndex < total) {
-    pagination.next = {
-      page: page + 1,
-      limit,
-    };
-  }
+  // if (endIndex < total) {
+  //   pagination.next = {
+  //     page: page + 1,
+  //     limit,
+  //   };
+  // }
 
-  if (startIndex > 0) {
-    pagination.prev = {
-      page: page - 1,
-      limit,
-    };
-  }
+  // if (startIndex > 0) {
+  //   pagination.prev = {
+  //     page: page - 1,
+  //     limit,
+  //   };
+  // }
+
+  // const leads = await Lead.aggregate([
+  //   {
+  //     $match: {},
+  //   },
+  //   {
+  //     $lookup: {
+  //       from: 'users',
+  //       localField: 'assignedTo',
+  //       foreignField: '_id',
+  //       as: 'assignedTo',
+  //     },
+  //   },
+  //   {
+  //     $unwind: '$assignedTo',
+  //   },
+  // ]);
+
+  const leads = await Lead.find({}).populate('assignedTo', 'name email _id');
 
   return res
     .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { leads, count: leads.length, pagination },
-        'Leads fetched successfully'
-      )
-    );
+    .json(new ApiResponse(200, leads, 'Leads fetched successfully'));
 });
 
 // @desc    Get single lead
@@ -101,7 +113,7 @@ const getLeads = asyncHandler(async (req, res, next) => {
 // @access  Privat
 //
 
-const getLead = asyncHandler(async (req, res, next) => {
+const getLead = asyncHandler(async (req, res) => {
   const { leadId } = req.params;
 
   const lead = await Lead.findById(leadId).populate('assignedTo', 'name email');
@@ -111,10 +123,7 @@ const getLead = asyncHandler(async (req, res, next) => {
   }
 
   // Make sure user is lead owner or admin
-  if (
-    lead.assignedTo.toString() !== req.user._id &&
-    req.user.role !== 'admin'
-  ) {
+  if (!lead.assignedTo._id.equals(req.user._id) && req.user.role !== 'admin') {
     throw new ApiError(401, 'User is not authorized to view this lead');
   }
 
@@ -122,21 +131,23 @@ const getLead = asyncHandler(async (req, res, next) => {
   const followUps = await FollowUp.find({ lead: leadId })
     .sort('-scheduled')
     .populate('assignedTo', 'name');
-  const activities = await Activity.find({ lead: leadId})
+  const activities = await Activity.find({ lead: leadId })
     .sort('-createdAt')
     .populate('user', 'name');
 
   // Create response object with all related data
-  const response = {
-    success: true,
-    data: {
-      lead,
-      followUps,
-      activities,
-    },
-  };
 
-  res.status(200).json(response);
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        lead,
+        followUps,
+        activities,
+      },
+      'Lead fetched successfully!'
+    )
+  );
 });
 
 // @desc    Create new lead
@@ -144,16 +155,19 @@ const getLead = asyncHandler(async (req, res, next) => {
 // @access  Private
 const createLead = asyncHandler(async (req, res, next) => {
   // Add user to req.body
-  req.body.assignedTo = req.user.id;
+  req.body.assignedTo = req.user._id;
 
   // Check for lead rotation settings
   const settings = await CompanySetting.findOne();
 
   // If auto-rotation is enabled and user is admin, use rotation logic
-  if (settings && settings.leadRotationEnabled && req.user.role === 'admin') {
-    const nextEmployee = await assignLeadToNextEmployee(req.body);
-    req.body.assignedTo = nextEmployee._id;
-  }
+  // if (true && true && req.user.role === 'employee') {
+  //   const nextEmployee = await assignLeadToNextEmployee(req.body);
+  //   req.body.assignedTo = nextEmployee._id;
+  // }
+
+  const nextEmployee = await assignLeadToNextEmployee(req.body);
+  req.body.assignedTo = nextEmployee._id;
 
   const lead = await Lead.create(req.body);
 
@@ -167,31 +181,28 @@ const createLead = asyncHandler(async (req, res, next) => {
     );
   }
 
-  res.status(201).json({
-    success: true,
-    data: lead,
-  });
+  return res
+    .status(201)
+    .json(new ApiResponse(201, lead, 'Lead created successfully'));
 });
 
 // @desc    Update lead
 // @route   PUT /api/v1/leads/:id
 // @access  Private
 const updateLead = asyncHandler(async (req, res, next) => {
-  let lead = await Lead.findById(req.params.id);
+  const { leadId } = req.params;
+
+  let lead = await Lead.findById(leadId);
 
   if (!lead) {
-    return next(
-      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `Lead not found with id of ${leadId}`);
   }
 
   // Make sure user is lead owner or admin
-  if (lead.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse(
-        `User ${req.user.id} is not authorized to update this lead`,
-        401
-      )
+  if (!lead.assignedTo.equals(req.user._id) && req.user.role !== 'admin') {
+    throw new ApiError(
+      401,
+      `User ${req.user._id} is not authorized to update this lead`
     );
   }
 
@@ -199,7 +210,7 @@ const updateLead = asyncHandler(async (req, res, next) => {
   const statusChanged = req.body.status && req.body.status !== lead.status;
   const oldStatus = lead.status;
 
-  lead = await Lead.findByIdAndUpdate(req.params.id, req.body, {
+  lead = await Lead.findByIdAndUpdate(leadId, req.body, {
     new: true,
     runValidators: true,
   });
@@ -208,7 +219,7 @@ const updateLead = asyncHandler(async (req, res, next) => {
   if (statusChanged) {
     await Activity.create({
       lead: lead._id,
-      user: req.user.id,
+      user: req.user._id,
       type: 'note',
       status: 'completed',
       notes: `Lead status changed from ${oldStatus} to ${lead.status}`,
@@ -231,26 +242,25 @@ const updateLead = asyncHandler(async (req, res, next) => {
     }
   }
 
-  res.status(200).json({
-    success: true,
-    data: lead,
-  });
+  return res
+    .status(200)
+    .json(new ApiResponse(200, lead, 'Lead updated successfully.'));
 });
 
 // @desc    Delete lead
 // @route   DELETE /api/v1/leads/:id
 // @access  Private
 const deleteLead = asyncHandler(async (req, res, next) => {
-  const lead = await Lead.findById(req.params.id);
+  const { leadId } = req.params;
+
+  const lead = await Lead.findById(leadId);
 
   if (!lead) {
-    return next(
-      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `Lead not found with id of ${leadId}`);
   }
 
   // Make sure user is lead owner or admin
-  if (lead.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
+  if (!lead.assignedTo.equals(req.user._id) && req.user.role !== 'admin') {
     return next(
       new ErrorResponse(
         `User ${req.user.id} is not authorized to delete this lead`,
@@ -261,15 +271,12 @@ const deleteLead = asyncHandler(async (req, res, next) => {
 
   // Delete lead and all related records (follow-ups, activities, etc.)
   await Promise.all([
-    lead.remove(),
-    FollowUp.deleteMany({ lead: req.params.id }),
-    Activity.deleteMany({ lead: req.params.id }),
+    Lead.findByIdAndDelete(leadId),
+    FollowUp.deleteMany({ lead: leadId }),
+    Activity.deleteMany({ lead: leadId }),
   ]);
 
-  res.status(200).json({
-    success: true,
-    data: {},
-  });
+  return res.status(200).json(new ApiResponse(200, {}, 'Lead deleted.'));
 });
 
 // @desc    Assign lead to user
@@ -277,17 +284,16 @@ const deleteLead = asyncHandler(async (req, res, next) => {
 // @access  Private/Admin
 const assignLead = asyncHandler(async (req, res, next) => {
   const { userId } = req.body;
+  const { leadId } = req.params;
 
   if (!userId) {
-    return next(new ErrorResponse('Please provide a user ID', 400));
+    throw new ApiError(400, 'User Id is required');
   }
 
-  let lead = await Lead.findById(req.params.id);
+  let lead = await Lead.findById(leadId);
 
   if (!lead) {
-    return next(
-      new ErrorResponse(`Lead not found with id of ${req.params.id}`, 404)
-    );
+    return next(new ErrorResponse(`Lead not found with id of ${leadId}`, 404));
   }
 
   // Make sure user is admin
@@ -302,7 +308,7 @@ const assignLead = asyncHandler(async (req, res, next) => {
 
   // Update the lead's assigned user
   lead = await Lead.findByIdAndUpdate(
-    req.params.id,
+    leadId,
     { assignedTo: userId },
     {
       new: true,
@@ -313,7 +319,7 @@ const assignLead = asyncHandler(async (req, res, next) => {
   // Create activity log
   await Activity.create({
     lead: lead._id,
-    user: req.user.id,
+    user: req.user._id,
     type: 'note',
     status: 'completed',
     notes: `Lead assigned to new employee`,
@@ -330,10 +336,15 @@ const assignLead = asyncHandler(async (req, res, next) => {
     'Lead'
   );
 
-  res.status(200).json({
-    success: true,
-    data: lead,
-  });
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        lead,
+        'lead is assigned to the new user successfully!'
+      )
+    );
 });
 
 export { getLeads, getLead, createLead, updateLead, deleteLead, assignLead };

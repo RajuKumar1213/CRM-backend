@@ -23,10 +23,13 @@ app.use(cookieParser());
 // import routers
 
 import authRouter from './routes/auth.routes.js';
-import leadRouter from "./routes/lead.routes.js"
-
+import leadRouter from './routes/lead.routes.js';
+import folloupRouter from './routes/followup.routes.js';
+import watsappRouter from './routes/wataspp.route.js';
 
 app.use('/api/v1/user', authRouter);
-app.use("/api/v1/lead", leadRouter)
+app.use('/api/v1/lead', leadRouter);
+app.use('/api/v1/followup', folloupRouter);
+app.use('/api/v1/watsapp', watsappRouter);
 
 export { app };

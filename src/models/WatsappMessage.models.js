@@ -13,7 +13,7 @@ const WhatsAppMessageSchema = new mongoose.Schema({
   },
   template: {
     type: mongoose.Schema.ObjectId,
-    ref: 'Template',
+    ref: 'WhatsappTemplate',
   },
   content: {
     type: String,

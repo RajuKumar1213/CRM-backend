@@ -74,6 +74,9 @@ const LeadSchema = new mongoose.Schema(
     lastContacted: {
       type: Date,
     },
+    lastContactMethod: {
+      type: String,
+    },
   },
   {
     timestamps: true,
