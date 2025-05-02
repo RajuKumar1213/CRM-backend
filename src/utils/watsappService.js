@@ -4,7 +4,6 @@ import { CompanySetting } from '../models/CompanySettings.models.js';
 import { Lead } from '../models/Lead.models.js';
 import axios from 'axios';
 import { ApiError } from './ApiError.js';
-import { WhatsappTemplate } from '../models/WatsappTemplate.models.js';
 
 /**
  * Send a WhatsApp message using a template

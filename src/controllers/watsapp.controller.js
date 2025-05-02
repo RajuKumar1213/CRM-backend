@@ -260,20 +260,18 @@ const getPhoneNumbers = asyncHandler(async (req, res, next) => {
 // @desc    Add a phone number for WhatsApp sending
 // @route   POST /api/v1/whatsapp/phone-numbers
 // @access  Private (Admin only)
-const addPhoneNumber = asyncHandler(async (req, res, next) => {
+const addPhoneNumber = asyncHandler(async (req, res) => {
   // Only admin can add phone numbers
   if (req.user.role !== 'admin') {
-    return next(new ErrorResponse('Not authorized to add phone numbers', 401));
+    throw new ApiError(401, 'Not authorized to add phone numbers');
   }
 
   // Validate phone number format
   const phoneRegex = /^\+\d{10,15}$/;
   if (!phoneRegex.test(req.body.phoneNumber)) {
-    return next(
-      new ErrorResponse(
-        'Phone number must be in international format (e.g., +91XXXXXXXXXX)',
-        400
-      )
+    throw new ApiError(
+      400,
+      'Phone number must be in international format (e.g.+91XXXXXXXXXX)'
     );
   }
 
@@ -282,22 +280,21 @@ const addPhoneNumber = asyncHandler(async (req, res, next) => {
     phoneNumber: req.body.phoneNumber,
   });
   if (existingNumber) {
-    return next(
-      new ErrorResponse('This phone number is already registered', 400)
-    );
+    throw new ApiError(400, 'This phone number is already registered');
   }
 
   const phoneNumber = await PhoneNumber.create({
     phoneNumber: req.body.phoneNumber,
     name: req.body.name || 'WhatsApp Number',
     isActive: req.body.isActive !== undefined ? req.body.isActive : true,
-    addedBy: req.user.id,
+    addedBy: req.user._id,
   });
 
-  res.status(201).json({
-    success: true,
-    data: phoneNumber,
-  });
+  return res
+    .status(201)
+    .json(
+      new ApiResponse(201, phoneNumber, 'Phone number added successfully!')
+    );
 });
 
 // @desc    Update a phone number for WhatsApp sending
@@ -420,12 +417,10 @@ const getMessageHistory = asyncHandler(async (req, res, next) => {
 // @desc    Get WhatsApp usage stats
 // @route   GET /api/v1/whatsapp/stats
 // @access  Private (Admin/Manager)
-const getWhatsappStats = asyncHandler(async (req, res, next) => {
+const getWhatsappStats = asyncHandler(async (req, res) => {
   // Only admin and manager can view stats
   if (!['admin', 'manager'].includes(req.user.role)) {
-    return next(
-      new ErrorResponse('Not authorized to view WhatsApp statistics', 401)
-    );
+   throw new ApiError(401, 'Not authorized to view WhatsApp stats')
   }
 
   // Get start and end dates from query or default to last 30 days
@@ -517,9 +512,10 @@ const getWhatsappStats = asyncHandler(async (req, res, next) => {
     .select('phoneNumber name messageCount isActive lastUsed')
     .sort('-messageCount');
 
-  res.status(200).json({
-    success: true,
-    data: {
+ 
+
+  return res.status(200).json(
+    new ApiResponse(200, {
       totalMessages: await Activity.countDocuments({
         action: 'whatsapp-sent',
         createdAt: { $gte: startDate, $lte: endDate },
@@ -528,8 +524,8 @@ const getWhatsappStats = asyncHandler(async (req, res, next) => {
       messagesByUser,
       messagesByTemplate,
       phoneNumberUsage,
-    },
-  });
+    }, "WhatsApp stats fetched successfully.")
+  )
 });
 
 export {
