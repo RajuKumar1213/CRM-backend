@@ -31,8 +31,6 @@ export const getNextAvailableNumber = async (companyId) => {
       isActive: true,
     });
 
-    console.log(activeNumbers, 'available phone');
-
     if (!activeNumbers.length) {
       console.error('No active phone numbers available for this company');
       return null;

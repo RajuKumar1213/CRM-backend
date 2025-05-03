@@ -29,6 +29,11 @@ const ActivitySchema = new mongoose.Schema(
     notes: {
       type: String,
     },
+    templateUsed: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'WhatsappTemplate',
+      required: true,
+    },
   },
   {
     timestamps: true,

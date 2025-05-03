@@ -19,10 +19,6 @@ const WhatsAppMessageSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Please add message content'],
   },
-  variables: {
-    type: Map,
-    of: String,
-  },
   status: {
     type: String,
     enum: ['queued', 'sent', 'delivered', 'read', 'failed'],

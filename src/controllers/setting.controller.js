@@ -1,5 +1,8 @@
-import asyncHandler from 'express-async-handler';
-import { CompanySetting } from '../models/CompanySettings.models';
+import mongoose from 'mongoose';
+import { CompanySetting } from '../models/CompanySettings.models.js';
+import { ApiError } from '../utils/ApiError.js';
+import { ApiResponse } from '../utils/ApiResponse.js';
+import asyncHandler from '../utils/asyncHandler.js';
 
 /**
  * @desc    Get all company settings
@@ -8,7 +11,20 @@ import { CompanySetting } from '../models/CompanySettings.models';
  */
 export const getCompanySettings = asyncHandler(async (req, res) => {
   const companySettings = await CompanySetting.find({});
-  res.status(200).json(companySettings);
+
+  if (!companySettings || companySettings.length === 0) {
+    throw new ApiError(404, 'No company settings found');
+  }
+
+  res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        companySettings,
+        'Company settings retrieved successfully'
+      )
+    );
 });
 
 /**
@@ -37,7 +53,6 @@ export const createCompanySetting = asyncHandler(async (req, res) => {
     companyName,
     logo,
     contactNumbers,
-    whatsappApiKey,
     whatsappApiProvider,
     whatsappApiUrl,
     leadRotationEnabled,
@@ -46,32 +61,51 @@ export const createCompanySetting = asyncHandler(async (req, res) => {
     defaultFollowupIntervals,
   } = req.body;
 
-  const companySettingExists = await CompanySetting.findOne({ companyName });
-
-  if (companySettingExists) {
-    res.status(400);
-    throw new Error('Company setting with this name already exists');
+  // Validate required fields
+  if (!companyName) {
+    throw new ApiError(400, 'Company name is required');
   }
 
+  // Check if company setting already exists
+  const companySettingExists = await CompanySetting.findOne({ companyName });
+  if (companySettingExists) {
+    throw new ApiError(400, 'Company setting with this name already exists');
+  }
+
+  if (req.user.role !== 'admin') {
+    throw new ApiError(401, 'Not authorized to create company setting');
+  }
+
+  // Create new company setting
   const companySetting = await CompanySetting.create({
     companyName,
     logo,
-    contactNumbers,
-    whatsappApiKey,
-    whatsappApiProvider,
+    contactNumbers: contactNumbers || [],
+    whatsappApiProvider: whatsappApiProvider || 'twilio', // Default to twilio
     whatsappApiUrl,
-    leadRotationEnabled,
-    numberRotationEnabled,
-    autoFollowupEnabled,
-    defaultFollowupIntervals,
+    leadRotationEnabled: leadRotationEnabled,
+    numberRotationEnabled: numberRotationEnabled,
+    autoFollowupEnabled: autoFollowupEnabled,
+    defaultFollowupIntervals: defaultFollowupIntervals || [],
   });
 
-  if (companySetting) {
-    res.status(201).json(companySetting);
-  } else {
-    res.status(400);
-    throw new Error('Invalid company setting data');
+  if (!companySetting) {
+    throw new ApiError(
+      400,
+      'Failed to create company setting due to invalid data'
+    );
   }
+
+  // Return success response
+  res
+    .status(201)
+    .json(
+      new ApiResponse(
+        201,
+        companySetting,
+        'Company setting created successfully'
+      )
+    );
 });
 
 /**
@@ -80,22 +114,46 @@ export const createCompanySetting = asyncHandler(async (req, res) => {
  * @access  Private/Admin
  */
 export const updateCompanySetting = asyncHandler(async (req, res) => {
-  const companySetting = await CompanySetting.findById(req.params.id);
+  const { id } = req.params;
 
-  if (!companySetting) {
-    res.status(404);
-    throw new Error('Company setting not found');
+  // Validate MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new ApiError(400, 'Invalid company setting ID');
   }
 
+  // Check if company setting exists
+  const companySetting = await CompanySetting.findById(id);
+  if (!companySetting) {
+    throw new ApiError(404, 'Company setting not found');
+  }
+
+  // Validate request body
+  if (!req.body || Object.keys(req.body).length === 0) {
+    throw new ApiError(400, 'No update data provided');
+  }
+
+  // Update company setting
   const updatedCompanySetting = await CompanySetting.findByIdAndUpdate(
-    req.params.id,
-    req.body,
+    id,
+    { $set: req.body }, // Use $set to update only provided fields
     { new: true, runValidators: true }
   );
 
-  res.status(200).json(updatedCompanySetting);
-});
+  if (!updatedCompanySetting) {
+    throw new ApiError(500, 'Failed to update company setting');
+  }
 
+  // Return success response
+  res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        updatedCompanySetting,
+        'Company setting updated successfully'
+      )
+    );
+});
 /**
  * @desc    Delete company setting
  * @route   DELETE /api/company-settings/:id

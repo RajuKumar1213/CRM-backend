@@ -1,13 +1,3 @@
-// const ErrorResponse = require('../utils/errorResponse');
-// const asyncHandler = require('../middleware/async');
-// const Lead = require('../models/Lead');
-// const User = require('../models/User');
-// const WhatsappTemplate = require('../models/WhatsappTemplate');
-// const PhoneNumber = require('../models/PhoneNumber');
-// const Activity = require('../models/Activity');
-// const whatsappService = require('../utils/whatsappService');
-// const phoneNumberRotationService = require('../utils/phoneNumberRotationService');
-
 import { ApiError } from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
@@ -21,6 +11,7 @@ import {
   getNextAvailableNumber,
   updateNumberUsage,
 } from '../utils/phoneNumberRotation.js';
+import mongoose from 'mongoose';
 
 // @desc    Send WhatsApp message to a lead
 // @route   POST /api/v1/whatsapp/send/:leadId
@@ -76,7 +67,7 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
   const senderNumber = await getNextAvailableNumber();
 
   if (!senderNumber) {
-    return next(new ErrorResponse('No available sender phone numbers', 400));
+    throw new ApiResponse(400, 'Not any sender number is available.');
   }
 
   try {
@@ -86,7 +77,6 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
       req.user._id,
       templateId,
       senderNumber.phoneNumber,
-      lead.phone,
       messageContent
     );
 
@@ -102,24 +92,22 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
     lead.lastContactMethod = 'whatsapp';
     await lead.save();
 
-    res.status(200).json({
-      success: true,
-      data: {
-        messageId: result.id,
-        recipient: lead.phone,
-        sender: senderNumber.phoneNumber,
-        content: messageContent,
-        template: templateName,
-      },
-    });
-  } catch (error) {
-    console.error('WhatsApp API Error:', error);
-    return next(
-      new ErrorResponse(
-        `Failed to send WhatsApp message: ${error.message}`,
-        500
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          messageId: result.id,
+          recipient: lead.phone,
+          sender: senderNumber.phoneNumber,
+          content: messageContent,
+          template: templateName,
+        },
+        'WhatsApp message sent successfully.'
       )
     );
+  } catch (error) {
+    console.log('error sending message : ', error);
+    throw new ApiError(500, 'Failed to send WhatsApp message');
   }
 });
 
@@ -183,99 +171,119 @@ const createWhatsappTemplate = asyncHandler(async (req, res, next) => {
 });
 
 // @desc    Update WhatsApp template
-// @route   PUT /api/v1/whatsapp/templates/:id
+// @route   PUT /api/v1/whatsapp/update-templates/:id
 // @access  Private (Admin/Manager)
-const updateWhatsappTemplate = asyncHandler(async (req, res, next) => {
-  // Only admin and manager can update templates
+const updateWhatsappTemplate = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  // Check user role
   if (!['admin', 'manager'].includes(req.user.role)) {
-    return next(
-      new ErrorResponse('Not authorized to update WhatsApp templates', 401)
-    );
+    throw new ApiError(401, 'Not authorized to update WhatsApp templates');
   }
 
-  let template = await WhatsappTemplate.findById(req.params.id);
+  // Validate MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new ApiError(400, 'Invalid WhatsApp template ID');
+  }
 
+  // Check if template exists
+  const template = await WhatsappTemplate.findById(id);
   if (!template) {
-    return next(
-      new ErrorResponse(`No template found with id ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `WhatsApp template not found with id ${id}`);
   }
 
-  template = await WhatsappTemplate.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+  // Validate request body
+  if (!req.body || Object.keys(req.body).length === 0) {
+    throw new ApiError(400, 'No update data provided');
+  }
 
-  res.status(200).json({
-    success: true,
-    data: template,
-  });
+  // Update template
+  const updatedTemplate = await WhatsappTemplate.findByIdAndUpdate(
+    id,
+    { $set: req.body }, // Use $set to update only provided fields
+    { new: true, runValidators: true }
+  );
+
+  if (!updatedTemplate) {
+    throw new ApiError(500, 'Failed to update WhatsApp template');
+  }
+
+  // Return success response
+  res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        updatedTemplate,
+        'WhatsApp template updated successfully'
+      )
+    );
 });
 
 // @desc    Delete WhatsApp template
-// @route   DELETE /api/v1/whatsapp/templates/:id
+// @route   DELETE /api/v1/whatsapp/delete-template/:id
 // @access  Private (Admin only)
-const deleteWhatsappTemplate = asyncHandler(async (req, res, next) => {
-  // Only admin can delete templates
+const deleteWhatsappTemplate = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
   if (req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse('Not authorized to delete WhatsApp templates', 401)
-    );
+    throw new ApiError(401, 'Not authorized to delete WhatsApp templates');
   }
 
-  const template = await WhatsappTemplate.findById(req.params.id);
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new ApiError(400, 'Invalid WhatsApp template ID');
+  }
 
+  const template = await WhatsappTemplate.findById(id);
   if (!template) {
-    return next(
-      new ErrorResponse(`No template found with id ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `WhatsApp template not found with id ${id}`);
   }
 
-  await template.remove();
+  await WhatsappTemplate.findByIdAndDelete(id);
 
-  res.status(200).json({
-    success: true,
-    data: {},
-  });
+  res
+    .status(200)
+    .json(new ApiResponse(200, {}, 'WhatsApp template deleted successfully'));
 });
 
 // @desc    Get all phone numbers for WhatsApp sending
 // @route   GET /api/v1/whatsapp/phone-numbers
 // @access  Private (Admin/Manager)
-const getPhoneNumbers = asyncHandler(async (req, res, next) => {
-  // Only admin and manager can view phone numbers
+const getPhoneNumbers = asyncHandler(async (req, res) => {
   if (!['admin', 'manager'].includes(req.user.role)) {
-    return next(new ErrorResponse('Not authorized to view phone numbers', 401));
+    throw new ApiError(401, 'Not authorized to view phone numbers');
   }
 
   const phoneNumbers = await PhoneNumber.find();
 
-  res.status(200).json({
-    success: true,
-    count: phoneNumbers.length,
-    data: phoneNumbers,
-  });
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        count: phoneNumbers.length,
+        data: phoneNumbers,
+      },
+      'Phone numbers retrieved successfully'
+    )
+  );
 });
 
 // @desc    Add a phone number for WhatsApp sending
 // @route   POST /api/v1/whatsapp/phone-numbers
 // @access  Private (Admin only)
 const addPhoneNumber = asyncHandler(async (req, res) => {
-  // Only admin can add phone numbers
   if (req.user.role !== 'admin') {
     throw new ApiError(401, 'Not authorized to add phone numbers');
   }
 
-  // Validate phone number format
   const phoneRegex = /^\+\d{10,15}$/;
   if (!phoneRegex.test(req.body.phoneNumber)) {
     throw new ApiError(
       400,
-      'Phone number must be in international format (e.g.+91XXXXXXXXXX)'
+      'Phone number must be in international format (e.g., +91XXXXXXXXXX)'
     );
   }
 
-  // Check if phone number already exists
   const existingNumber = await PhoneNumber.findOne({
     phoneNumber: req.body.phoneNumber,
   });
@@ -290,151 +298,159 @@ const addPhoneNumber = asyncHandler(async (req, res) => {
     addedBy: req.user._id,
   });
 
-  return res
+  res
     .status(201)
-    .json(
-      new ApiResponse(201, phoneNumber, 'Phone number added successfully!')
-    );
+    .json(new ApiResponse(201, phoneNumber, 'Phone number added successfully'));
 });
 
 // @desc    Update a phone number for WhatsApp sending
 // @route   PUT /api/v1/whatsapp/phone-numbers/:id
 // @access  Private (Admin only)
-const updatePhoneNumber = asyncHandler(async (req, res, next) => {
-  // Only admin can update phone numbers
+const updatePhoneNumber = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
   if (req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse('Not authorized to update phone numbers', 401)
-    );
+    throw new ApiError(401, 'Not authorized to update phone numbers');
   }
 
-  let phoneNumber = await PhoneNumber.findById(req.params.id);
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new ApiError(400, 'Invalid phone number ID');
+  }
 
+  const phoneNumber = await PhoneNumber.findById(id);
   if (!phoneNumber) {
-    return next(
-      new ErrorResponse(`No phone number found with id ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `Phone number not found with id ${id}`);
   }
 
-  // If updating the phone number itself, validate the format
   if (req.body.phoneNumber) {
     const phoneRegex = /^\+\d{10,15}$/;
     if (!phoneRegex.test(req.body.phoneNumber)) {
-      return next(
-        new ErrorResponse(
-          'Phone number must be in international format (e.g., +91XXXXXXXXXX)',
-          400
-        )
+      throw new ApiError(
+        400,
+        'Phone number must be in international format (e.g., +91XXXXXXXXXX)'
       );
     }
 
-    // Check if new number already exists (if different from current)
     if (req.body.phoneNumber !== phoneNumber.phoneNumber) {
       const existingNumber = await PhoneNumber.findOne({
         phoneNumber: req.body.phoneNumber,
       });
       if (existingNumber) {
-        return next(
-          new ErrorResponse('This phone number is already registered', 400)
-        );
+        throw new ApiError(400, 'This phone number is already registered');
       }
     }
   }
 
-  phoneNumber = await PhoneNumber.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+  const updatedPhoneNumber = await PhoneNumber.findByIdAndUpdate(
+    id,
+    { $set: req.body },
+    {
+      new: true,
+      runValidators: true,
+    }
+  );
 
-  res.status(200).json({
-    success: true,
-    data: phoneNumber,
-  });
+  if (!updatedPhoneNumber) {
+    throw new ApiError(500, 'Failed to update phone number');
+  }
+
+  res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        updatedPhoneNumber,
+        'Phone number updated successfully'
+      )
+    );
 });
 
 // @desc    Delete a phone number for WhatsApp sending
 // @route   DELETE /api/v1/whatsapp/phone-numbers/:id
 // @access  Private (Admin only)
-const deletePhoneNumber = asyncHandler(async (req, res, next) => {
-  // Only admin can delete phone numbers
+const deletePhoneNumber = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
   if (req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse('Not authorized to delete phone numbers', 401)
-    );
+    throw new ApiError(401, 'Not authorized to delete phone numbers');
   }
 
-  const phoneNumber = await PhoneNumber.findById(req.params.id);
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new ApiError(400, 'Invalid phone number ID');
+  }
 
+  const phoneNumber = await PhoneNumber.findById(id);
   if (!phoneNumber) {
-    return next(
-      new ErrorResponse(`No phone number found with id ${req.params.id}`, 404)
-    );
+    throw new ApiError(404, `Phone number not found with id ${id}`);
   }
 
-  await phoneNumber.remove();
+  await PhoneNumber.findByIdAndDelete(id);
 
-  res.status(200).json({
-    success: true,
-    data: {},
-  });
+  res
+    .status(200)
+    .json(new ApiResponse(200, {}, 'Phone number deleted successfully'));
 });
 
 // @desc    Get WhatsApp message history for a lead
 // @route   GET /api/v1/whatsapp/history/:leadId
 // @access  Private
-const getMessageHistory = asyncHandler(async (req, res, next) => {
-  const lead = await Lead.findById(req.params.leadId);
+const getMessageHistory = asyncHandler(async (req, res) => {
+  const { leadId } = req.params;
 
+  if (!mongoose.Types.ObjectId.isValid(leadId)) {
+    throw new ApiError(400, 'Invalid lead ID');
+  }
+
+  const lead = await Lead.findById(leadId);
   if (!lead) {
-    return next(
-      new ErrorResponse(`No lead found with id ${req.params.leadId}`, 404)
+    throw new ApiError(404, `Lead not found with id ${leadId}`);
+  }
+
+  if (
+    lead.assignedTo.toString() !== req.user._id &&
+    req.user.role !== 'admin'
+  ) {
+    throw new ApiError(
+      401,
+      `User ${req.user._id} is not authorized to view message history for this lead`
     );
   }
 
-  // Check authorization - user must be lead owner or admin
-  if (lead.assignedTo.toString() !== req.user.id && req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse(
-        `User ${req.user.id} is not authorized to view message history for this lead`,
-        401
-      )
-    );
-  }
-
-  // Get WhatsApp message activities for this lead
   const messageHistory = await Activity.find({
     lead: lead._id,
-    action: 'whatsapp-sent',
+    type: 'whatsapp',
   }).sort('-createdAt');
 
-  res.status(200).json({
-    success: true,
-    count: messageHistory.length,
-    data: messageHistory,
-  });
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        count: messageHistory.length,
+        data: messageHistory,
+      },
+      'Message history retrieved successfully'
+    )
+  );
 });
 
 // @desc    Get WhatsApp usage stats
 // @route   GET /api/v1/whatsapp/stats
 // @access  Private (Admin/Manager)
 const getWhatsappStats = asyncHandler(async (req, res) => {
-  // Only admin and manager can view stats
   if (!['admin', 'manager'].includes(req.user.role)) {
-   throw new ApiError(401, 'Not authorized to view WhatsApp stats')
+    throw new ApiError(401, 'Not authorized to view WhatsApp stats');
   }
 
-  // Get start and end dates from query or default to last 30 days
   const endDate = new Date();
   const startDate = new Date();
   startDate.setDate(
     startDate.getDate() - (req.query.days ? parseInt(req.query.days) : 30)
   );
 
-  // Get message count by day
   const messagesByDay = await Activity.aggregate([
     {
       $match: {
-        action: 'whatsapp-sent',
+        type: 'whatsapp',
         createdAt: { $gte: startDate, $lte: endDate },
       },
     },
@@ -444,16 +460,13 @@ const getWhatsappStats = asyncHandler(async (req, res) => {
         count: { $sum: 1 },
       },
     },
-    {
-      $sort: { _id: 1 },
-    },
+    { $sort: { _id: 1 } },
   ]);
 
-  // Get message count by user
   const messagesByUser = await Activity.aggregate([
     {
       $match: {
-        action: 'whatsapp-sent',
+        type: 'whatsapp',
         createdAt: { $gte: startDate, $lte: endDate },
       },
     },
@@ -471,9 +484,7 @@ const getWhatsappStats = asyncHandler(async (req, res) => {
         as: 'userDetails',
       },
     },
-    {
-      $unwind: '$userDetails',
-    },
+    { $unwind: '$userDetails' },
     {
       $project: {
         _id: 1,
@@ -482,50 +493,68 @@ const getWhatsappStats = asyncHandler(async (req, res) => {
         email: '$userDetails.email',
       },
     },
-    {
-      $sort: { count: -1 },
-    },
+    { $sort: { count: -1 } },
   ]);
 
-  // Get message count by template
   const messagesByTemplate = await Activity.aggregate([
     {
       $match: {
-        action: 'whatsapp-sent',
-        'metadata.templateUsed': { $ne: null },
+        type: 'whatsapp',
+        templateUsed: { $ne: null },
         createdAt: { $gte: startDate, $lte: endDate },
       },
     },
     {
       $group: {
-        _id: '$metadata.templateUsed',
+        _id: '$templateUsed', // 👈 Reference the field correctly
         count: { $sum: 1 },
       },
     },
     {
       $sort: { count: -1 },
     },
+    {
+      $lookup: {
+        from: 'whatsapptemplates', // ⚠️ collection name in lowercase plural usually
+        localField: '_id',
+        foreignField: '_id',
+        as: 'template',
+      },
+    },
+    {
+      $unwind: '$template',
+    },
+    {
+      $project: {
+        _id: 0,
+        templateId: '$_id',
+        count: 1,
+        templateName: '$template.name',
+        description: '$template.description',
+      },
+    },
   ]);
 
-  // Get phone number usage
   const phoneNumberUsage = await PhoneNumber.find()
     .select('phoneNumber name messageCount isActive lastUsed')
     .sort('-messageCount');
 
- 
-
-  return res.status(200).json(
-    new ApiResponse(200, {
-      totalMessages: await Activity.countDocuments({
-        action: 'whatsapp-sent',
-        createdAt: { $gte: startDate, $lte: endDate },
-      }),
-      messagesByDay,
-      messagesByUser,
-      messagesByTemplate,
-      phoneNumberUsage,
-    }, "WhatsApp stats fetched successfully.")
-  )
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        totalMessages: await Activity.countDocuments({
+          type: 'whatsapp',
+          createdAt: { $gte: startDate, $lte: endDate },
+        }),
+        messagesByDay,
+        messagesByUser,
+        messagesByTemplate,
+        phoneNumberUsage,
+      },
+      'WhatsApp stats retrieved successfully'
+    )
+  );
 });
 
 export {
