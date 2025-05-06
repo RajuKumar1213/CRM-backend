@@ -27,11 +27,13 @@ import leadRouter from './routes/lead.routes.js';
 import folloupRouter from './routes/followup.routes.js';
 import watsappRouter from './routes/wataspp.route.js';
 import companySettingRouter from './routes/companySetting.routes.js';
+import callRouter from './routes/call.routes.js';
 
 app.use('/api/v1/user', authRouter);
 app.use('/api/v1/lead', leadRouter);
 app.use('/api/v1/followup', folloupRouter);
 app.use('/api/v1/watsapp', watsappRouter);
 app.use('/api/v1/setting', companySettingRouter);
+app.use('/api/v1/call', callRouter);
 
 export { app };

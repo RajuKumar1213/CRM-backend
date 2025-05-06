@@ -32,7 +32,6 @@ const ActivitySchema = new mongoose.Schema(
     templateUsed: {
       type: mongoose.Schema.ObjectId,
       ref: 'WhatsappTemplate',
-      required: true,
     },
   },
   {

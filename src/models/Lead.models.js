@@ -38,8 +38,11 @@ const LeadSchema = new mongoose.Schema(
     },
     source: {
       type: String,
-      enum: ['website', 'referral', 'cold-call', 'social-media', 'other'],
-      default: 'other',
+      enum: ['whatsapp'],
+      default: 'whatsapp',
+    },
+    message: {
+      type: String,
     },
     status: {
       type: String,
@@ -65,8 +68,8 @@ const LeadSchema = new mongoose.Schema(
     assignedTo: {
       type: mongoose.Schema.ObjectId,
       ref: 'User',
-      required: true,
     },
+    messageSid: { type: String },
     contactedWith: {
       type: String,
       match: [/^\+?[0-9]{10,15}$/, 'Please add a valid phone number'],

@@ -8,6 +8,19 @@ import { Lead } from '../models/Lead.models.js';
 import { FollowUp } from '../models/FollowUp.models.js';
 import { Activity } from '../models/Activity.models.js';
 import { CompanySetting } from '../models/CompanySettings.models.js';
+import twilio from 'twilio';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// setup twilio
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+const MessagingResponse = twilio.twiml.MessagingResponse;
+const twiml = new MessagingResponse();
 
 // @desc    Get all leads
 // @route   GET /api/v1/leads
@@ -153,37 +166,160 @@ const getLead = asyncHandler(async (req, res) => {
 // @desc    Create new lead
 // @route   POST /api/v1/leads
 // @access  Private
-const createLead = asyncHandler(async (req, res, next) => {
-  // Add user to req.body
-  req.body.assignedTo = req.user._id;
+// const createLead = asyncHandler(async (req, res, next) => {
+//   // Add user to req.body
+//   req.body.assignedTo = req.user._id;
 
-  // Check for lead rotation settings
-  const settings = await CompanySetting.findOne();
+//   // Check for lead rotation settings
+//   const settings = await CompanySetting.findOne();
 
-  // If auto-rotation is enabled and user is admin, use rotation logic
-  // if (true && true && req.user.role === 'employee') {
-  //   const nextEmployee = await assignLeadToNextEmployee(req.body);
-  //   req.body.assignedTo = nextEmployee._id;
-  // }
+//   // If auto-rotation is enabled and user is admin, use rotation logic
+//   // if (true && true && req.user.role === 'employee') {
+//   //   const nextEmployee = await assignLeadToNextEmployee(req.body);
+//   //   req.body.assignedTo = nextEmployee._id;
+//   // }
 
-  const nextEmployee = await assignLeadToNextEmployee(req.body);
-  req.body.assignedTo = nextEmployee._id;
+//   const nextEmployee = await assignLeadToNextEmployee(req.body);
+//   req.body.assignedTo = nextEmployee._id;
 
-  const lead = await Lead.create(req.body);
+//   const lead = await Lead.create(req.body);
 
-  // Schedule initial follow-up if desired (default: 1 day)
-  if (req.body.scheduleFollowUp !== false) {
-    await scheduleFollowUp(
-      lead,
-      lead.assignedTo,
-      req.body.followUpType || 'call',
-      req.body.followUpInterval || null
-    );
+//   // Schedule initial follow-up if desired (default: 1 day)
+//   if (req.body.scheduleFollowUp !== false) {
+//     await scheduleFollowUp(
+//       lead,
+//       lead.assignedTo,
+//       req.body.followUpType || 'call',
+//       req.body.followUpInterval || null
+//     );
+//   }
+
+//   return res
+//     .status(201)
+//     .json(new ApiResponse(201, lead, 'Lead created successfully'));
+// });
+
+// @desc    get leads from whataspp
+// @route   POST /api/v1/lead/webhook
+// @access  Private
+const getLeadFromWhatsapp = asyncHandler(async (req, res) => {
+  try {
+    const { Body, From, ProfileName, MessageSid, SmsStatus } = req.body;
+
+    // Log the full request body for debugging
+    // console.log('📥 Full WhatsApp webhook:', JSON.stringify(req.body, null, 2));
+
+    // Only process actual messages, ignore status updates
+    if (
+      SmsStatus &&
+      (SmsStatus === 'delivered' ||
+        SmsStatus === 'sent' ||
+        SmsStatus === 'read')
+    ) {
+      // console.log(
+      //   `📨 Ignoring status update webhook: ${SmsStatus} for ${MessageSid}`
+      // );
+      return res.status(200).send('Status update acknowledged');
+    }
+
+    if (!From) {
+      // console.warn('⚠️ Missing From field in webhook:', req.body);
+      return res.status(400).send('Invalid WhatsApp message payload');
+    }
+
+    // Skip processing if there's no actual message content
+    if (!Body) {
+      // console.log('⚠️ No message content, skipping lead processing for:', From);
+      return res.status(200).send('Empty message acknowledged');
+    }
+
+    const phoneNumber = From.replace('whatsapp:', '');
+
+    // Log important fields
+    // console.log('📥 Processing WhatsApp message:', {
+    //   phoneNumber,
+    //   Body,
+    //   ProfileName,
+    //   MessageSid,
+    // });
+
+    let lead = await Lead.findOne({ phone: phoneNumber });
+    let isNewLead = false;
+
+    if (!lead) {
+      isNewLead = true;
+      // Default name from profile or phone
+      let name = ProfileName || phoneNumber;
+
+      // Try to extract name from Body
+      if (Body && typeof Body === 'string') {
+        const nameMatch = Body.match(/(?:my name is|I am|I'm) ([A-Za-z\s]+)/i);
+        if (nameMatch && nameMatch[1]) {
+          name = nameMatch[1].trim();
+        }
+      }
+
+      // Create the lead
+      lead = new Lead({
+        name,
+        phone: phoneNumber,
+        message: Body, // We already checked Body exists
+        source: 'whatsapp',
+        messageSid: MessageSid, // Store the MessageSid to prevent duplicates
+      });
+
+      await lead.save();
+
+      if (!lead) {
+        throw new ApiError(500, 'Failed to create lead');
+      }
+
+      // Assign to employee
+      const nextEmployee = await assignLeadToNextEmployee(lead);
+      if (nextEmployee) {
+        lead.assignedTo = nextEmployee._id;
+        await lead.save();
+        console.log(`👨‍💼 Lead assigned to employee: ${nextEmployee.name}`);
+      } else {
+        console.warn('⚠️ No employee available for assignment');
+      }
+    } else {
+      // Check if this exact message was already processed (by MessageSid)
+      if (lead.messageSid === MessageSid) {
+        // console.log(
+        //   `🔄 Duplicate message detected (MessageSid: ${MessageSid}), skipping update`
+        // );
+        return res.status(200).send('Duplicate message acknowledged');
+      }
+
+      // Update message history and MessageSid
+      lead.message += `\n${Body}`;
+      lead.messageSid = MessageSid; // Update the MessageSid to the latest
+      await lead.save();
+    }
+
+    // Generate appropriate WhatsApp response
+    const twiml = new MessagingResponse();
+    if (isNewLead) {
+      twiml.message(
+        'Thank you for contacting us! One of our representatives will get in touch with you shortly.'
+      );
+    } else {
+      twiml.message("Thanks for your message! We're working on your request.");
+    }
+
+    // Send response to WhatsApp
+    res.writeHead(200, { 'Content-Type': 'text/xml' });
+    res.end(twiml.toString());
+
+    // Log successful operation
+    // console.log(
+    //   `✅ WhatsApp lead ${isNewLead ? 'created' : 'updated'}: ${phoneNumber}`
+    // );
+  } catch (error) {
+    // console.error('🔥 Error in WhatsApp webhook:', error);
+    throw new ApiError(500, 'Server Error');
   }
-
-  return res
-    .status(201)
-    .json(new ApiResponse(201, lead, 'Lead created successfully'));
 });
 
 // @desc    Update lead
@@ -347,4 +483,11 @@ const assignLead = asyncHandler(async (req, res, next) => {
     );
 });
 
-export { getLeads, getLead, createLead, updateLead, deleteLead, assignLead };
+export {
+  getLeads,
+  getLead,
+  updateLead,
+  deleteLead,
+  assignLead,
+  getLeadFromWhatsapp,
+};
