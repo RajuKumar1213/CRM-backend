@@ -126,6 +126,18 @@ const getLeads = asyncHandler(async (req, res, next) => {
 // @access  Privat
 //
 
+const getUserLeads = asyncHandler(async (req, res)=> {
+
+  const leads = await Lead.find({assignedTo: req.user._id}).select("-messageSid")
+
+  if(!leads){
+    throw new ApiError(404, "Leads not found")
+  }
+
+  return res.status(200).json(new ApiResponse(200, leads , "Leads fetched successfully"))
+
+})
+
 const getLead = asyncHandler(async (req, res) => {
   const { leadId } = req.params;
 
@@ -166,38 +178,38 @@ const getLead = asyncHandler(async (req, res) => {
 // @desc    Create new lead
 // @route   POST /api/v1/leads
 // @access  Private
-// const createLead = asyncHandler(async (req, res, next) => {
-//   // Add user to req.body
-//   req.body.assignedTo = req.user._id;
+const createLead = asyncHandler(async (req, res, next) => {
+  // Add user to req.body
+  req.body.assignedTo = req.user._id;
 
-//   // Check for lead rotation settings
-//   const settings = await CompanySetting.findOne();
+  // Check for lead rotation settings
+  const settings = await CompanySetting.findOne();
 
-//   // If auto-rotation is enabled and user is admin, use rotation logic
-//   // if (true && true && req.user.role === 'employee') {
-//   //   const nextEmployee = await assignLeadToNextEmployee(req.body);
-//   //   req.body.assignedTo = nextEmployee._id;
-//   // }
+  // If auto-rotation is enabled and user is admin, use rotation logic
+  // if (true && true && req.user.role === 'employee') {
+  //   const nextEmployee = await assignLeadToNextEmployee(req.body);
+  //   req.body.assignedTo = nextEmployee._id;
+  // }
 
-//   const nextEmployee = await assignLeadToNextEmployee(req.body);
-//   req.body.assignedTo = nextEmployee._id;
+  const nextEmployee = await assignLeadToNextEmployee(req.body);
+  req.body.assignedTo = nextEmployee._id;
 
-//   const lead = await Lead.create(req.body);
+  const lead = await Lead.create(req.body);
 
-//   // Schedule initial follow-up if desired (default: 1 day)
-//   if (req.body.scheduleFollowUp !== false) {
-//     await scheduleFollowUp(
-//       lead,
-//       lead.assignedTo,
-//       req.body.followUpType || 'call',
-//       req.body.followUpInterval || null
-//     );
-//   }
+  // Schedule initial follow-up if desired (default: 1 day)
+  if (req.body.scheduleFollowUp !== false) {
+    await scheduleFollowUp(
+      lead,
+      lead.assignedTo,
+      req.body.followUpType || 'call',
+      req.body.followUpInterval || null
+    );
+  }
 
-//   return res
-//     .status(201)
-//     .json(new ApiResponse(201, lead, 'Lead created successfully'));
-// });
+  return res
+    .status(201)
+    .json(new ApiResponse(201, lead, 'Lead created successfully'));
+});
 
 // @desc    get leads from whataspp
 // @route   POST /api/v1/lead/webhook
@@ -397,11 +409,9 @@ const deleteLead = asyncHandler(async (req, res, next) => {
 
   // Make sure user is lead owner or admin
   if (!lead.assignedTo.equals(req.user._id) && req.user.role !== 'admin') {
-    return next(
-      new ErrorResponse(
-        `User ${req.user.id} is not authorized to delete this lead`,
-        401
-      )
+    throw new ApiError(
+      401,
+      `User ${req.user.name} is not authorized to delete this lead`
     );
   }
 
@@ -483,6 +493,67 @@ const assignLead = asyncHandler(async (req, res, next) => {
     );
 });
 
+// get all activities for admin
+const getActivities = asyncHandler(async (req, res, next) => {
+  const activities = await Activity.aggregate([
+    { $sort: { createdAt: -1 } },
+    { $limit: 5 },
+    {
+      $lookup: {
+        from: "users", // Make sure this matches your collection name!
+        localField: "user",
+        foreignField: "_id",
+        as: "userInfo"
+      }
+    },
+    {
+      $unwind: {
+        path: "$userInfo",
+        preserveNullAndEmptyArrays: true
+      }
+    },
+    {
+      $lookup: {
+        from: "leads", // Make sure this matches your collection name!
+        localField: "lead",
+        foreignField: "_id",
+        as: "leadInfo"
+      }
+    },
+    {
+      $unwind: {
+        path: "$leadInfo",
+        preserveNullAndEmptyArrays: true
+      }
+    },
+    {
+      $project: {
+        _id: 1,
+        type: 1,
+        status: 1,
+        duration: 1,
+        notes: 1,
+        createdAt: 1,
+        "userInfo.name": 1,
+        "userInfo.email": 1,
+        "leadInfo.name": 1,
+        "leadInfo.phone": 1,
+      }
+    }
+  ]);
+
+  if (!activities || activities.length === 0) {
+    throw new ApiError(404, "No activities found");
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, activities, "Latest activities fetched successfully"));
+});
+
+
+
+
 export {
   getLeads,
   getLead,
@@ -490,4 +561,7 @@ export {
   deleteLead,
   assignLead,
   getLeadFromWhatsapp,
+  getUserLeads,
+  getActivities,
+  createLead
 };

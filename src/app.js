@@ -25,7 +25,7 @@ app.use(cookieParser());
 import authRouter from './routes/auth.routes.js';
 import leadRouter from './routes/lead.routes.js';
 import folloupRouter from './routes/followup.routes.js';
-import watsappRouter from './routes/wataspp.route.js';
+import watsappRouter from './routes/whatsapp.route.js';
 import companySettingRouter from './routes/companySetting.routes.js';
 import callRouter from './routes/call.routes.js';
 

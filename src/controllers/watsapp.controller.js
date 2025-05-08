@@ -117,11 +117,7 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
 const getWhatsappTemplates = asyncHandler(async (req, res, next) => {
   const templates = await WhatsappTemplate.find();
 
-  res.status(200).json({
-    success: true,
-    count: templates.length,
-    data: templates,
-  });
+
 
   return res
     .status(200)

@@ -372,11 +372,7 @@ const getTodayFollowUps = asyncHandler(async (req, res) => {
     select: 'name phone email company status',
   });
 
-  res.status(200).json({
-    success: true,
-    count: followUps.length,
-    data: followUps,
-  });
+ 
 
   return res
     .status(200)
@@ -405,11 +401,6 @@ const getOverdueFollowUps = asyncHandler(async (req, res) => {
     select: 'name phone email company status',
   });
 
-  res.status(200).json({
-    success: true,
-    count: followUps.length,
-    data: followUps,
-  });
 
   return res.status(200).json(
     new ApiResponse(

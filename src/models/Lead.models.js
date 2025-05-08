@@ -20,18 +20,6 @@ const LeadSchema = new mongoose.Schema(
       required: [true, 'Please add a phone number'],
       match: [/^\+?[0-9]{10,15}$/, 'Please add a valid phone number'],
     },
-    alternatePhone: {
-      type: String,
-      match: [/^\+?[0-9]{10,15}$/, 'Please add a valid phone number'],
-    },
-    company: {
-      type: String,
-      trim: true,
-    },
-    position: {
-      type: String,
-      trim: true,
-    },
     product: {
       type: String,
       trim: true,
