@@ -392,26 +392,32 @@ const getOverdueFollowUps = asyncHandler(async (req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
   const followUps = await FollowUp.find({
     assignedTo: req.user._id,
-    scheduled: { $lt: today },
+    scheduled: {
+      $lte: today,
+    },
     status: { $ne: 'completed' },
   }).populate({
     path: 'lead',
     select: 'name phone email company status',
   });
 
+ 
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      {
-        count: followUps.length,
-        data: followUps,
-      },
-      'Overdue followups fetched successfully'
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { count: followUps.length, followUps },
+        "Overdue followups fetched successfully"
+      )
+    );
+
 });
 
 // @desc    Get upcoming follow-ups for current user
