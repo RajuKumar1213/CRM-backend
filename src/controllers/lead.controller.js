@@ -141,7 +141,7 @@ const getUserLeads = asyncHandler(async (req, res)=> {
 const getLead = asyncHandler(async (req, res) => {
   const { leadId } = req.params;
 
-  const lead = await Lead.findById(leadId).populate('assignedTo', 'name email');
+  const lead = await Lead.findById(leadId)
 
   if (!lead) {
     throw new ApiError(404, 'Lead not found');

@@ -355,24 +355,47 @@ const completeFollowUp = asyncHandler(async (req, res, next) => {
 // @access  Private
 const getTodayFollowUps = asyncHandler(async (req, res) => {
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+today.setHours(0, 0, 0, 0);
 
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+const tomorrow = new Date(today);
+tomorrow.setDate(today.getDate() + 1);
 
-  const followUps = await FollowUp.find({
-    assignedTo: req.user._id,
-    scheduled: {
-      $gte: today,
-      $lt: tomorrow,
-    },
-    status: { $ne: 'completed' },
-  }).populate({
-    path: 'lead',
-    select: 'name phone email company status',
-  });
+const followUps = await FollowUp.aggregate([
+  {
+    $match: {
+      assignedTo: req.user._id,
+      status: { $ne: 'completed' },
+      scheduled: {
+        $gte: today,
+        $lt: tomorrow
+      }
+    }
+  },
+  {
+    $lookup: {
+      from: 'leads',
+      localField: 'lead',
+      foreignField: '_id',
+      as: 'lead'
+    }
+  },
+  {
+    $unwind: '$lead'
+  },
+  {
+    $project: {
+      scheduled: 1,
+      status: 1,
+      'lead.name': 1,
+      'lead.phone': 1,
+      'lead.email': 1,
+      'lead.company': 1,
+      'lead.status': 1
+    }
+  }
+]);
 
- 
+  
 
   return res
     .status(200)
@@ -390,34 +413,47 @@ const getTodayFollowUps = asyncHandler(async (req, res) => {
 // @access  Private
 const getOverdueFollowUps = asyncHandler(async (req, res) => {
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0); // Midnight today
 
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const followUps = await FollowUp.find({
-    assignedTo: req.user._id,
-    scheduled: {
-      $lte: today,
+  const followUps = await FollowUp.aggregate([
+    {
+      $match: {
+        assignedTo: req.user._id,
+        status: { $ne: 'completed' },
+        scheduled: { $lt: today } // Anything before today
+      }
     },
-    status: { $ne: 'completed' },
-  }).populate({
-    path: 'lead',
-    select: 'name phone email company status',
-  });
+    {
+      $lookup: {
+        from: 'leads',
+        localField: 'lead',
+        foreignField: '_id',
+        as: 'lead'
+      }
+    },
+    {
+      $unwind: '$lead'
+    },
+    {
+      $project: {
+        scheduled: 1,
+        status: 1,
+        'lead.name': 1,
+        'lead.phone': 1,
+        'lead.email': 1,
+        'lead.company': 1,
+        'lead.status': 1
+      }
+    }
+  ]);
 
- 
-
-  return res
-    .status(200)
-    .json(
-      new ApiResponse(
-        200,
-        { count: followUps.length, followUps },
-        "Overdue followups fetched successfully"
-      )
-    );
-
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { count: followUps.length, followUps },
+      'Overdue followups fetched successfully'
+    )
+  );
 });
 
 // @desc    Get upcoming follow-ups for current user
@@ -430,7 +466,7 @@ const getUpcomingFollowUps = asyncHandler(async (req, res, next) => {
   const nextWeek = new Date(today);
   nextWeek.setDate(nextWeek.getDate() + 7);
 
-  const followUps = await FollowUp.find({
+  const followUps = await FollowUp.find({ 
     assignedTo: req.user._id,
     scheduled: {
       $gte: today,
