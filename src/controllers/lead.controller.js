@@ -8,8 +8,49 @@ import { Lead } from '../models/Lead.models.js';
 import { FollowUp } from '../models/FollowUp.models.js';
 import { Activity } from '../models/Activity.models.js';
 import { CompanySetting } from '../models/CompanySettings.models.js';
+import mongoose from 'mongoose';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
+
+// Helper functions for formatting lead data
+const formatDuration = (seconds) => {
+  if (!seconds) return null;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes === 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${remainingSeconds}s`;
+};
+
+const getTimeUntil = (dateTime) => {
+  const now = new Date();
+  const targetDate = new Date(dateTime);
+  const diffMs = targetDate - now;
+  
+  // If date is in the past
+  if (diffMs < 0) {
+    const absDiffMs = Math.abs(diffMs);
+    const days = Math.floor(absDiffMs / (1000 * 60 * 60 * 24));
+    if (days > 0) return `${days} day(s) ago`;
+    
+    const hours = Math.floor((absDiffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    if (hours > 0) return `${hours} hour(s) ago`;
+    
+    const minutes = Math.floor((absDiffMs % (1000 * 60 * 60)) / (1000 * 60));
+    return `${minutes} minute(s) ago`;
+  }
+  
+  // If date is in the future
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (days > 0) return `in ${days} day(s)`;
+  
+  const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  if (hours > 0) return `in ${hours} hour(s)`;
+  
+  const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+  return `in ${minutes} minute(s)`;
+};
 
 dotenv.config();
 
@@ -151,24 +192,105 @@ const getLead = asyncHandler(async (req, res) => {
   if (!lead.assignedTo._id.equals(req.user._id) && req.user.role !== 'admin') {
     throw new ApiError(401, 'User is not authorized to view this lead');
   }
-
-  // Get follow-ups and activities for this lead
+  // Get follow-ups and activities for this lead with populated references
   const followUps = await FollowUp.find({ lead: leadId })
     .sort('-scheduled')
-    .populate('assignedTo', 'name');
+    .populate('assignedTo', 'name email')
+    .lean();
+    
   const activities = await Activity.find({ lead: leadId })
     .sort('-createdAt')
-    .populate('user', 'name');
+    .populate('user', 'name email')
+    .populate({
+      path: 'templateUsed',
+      select: 'name content',
+    })
+    .lean();
+    
+  // Enrich activity data with better contextual information
+  const enrichedActivities = activities.map(activity => {
+    // Add human-readable activity descriptions based on type
+    let actionText = "";
+    let statusText = "";
+    
+    switch (activity.type) {
+      case 'call':
+        actionText = "Made a call";
+        statusText = activity.status === 'connected' ? "Connected" : 
+                     activity.status === 'not-answered' ? "No answer" : 
+                     activity.status === 'attempted' ? "Attempted" : "Completed";
+        break;
+      case 'whatsapp':
+        actionText = "Sent WhatsApp message";
+        statusText = activity.status === 'completed' ? "Delivered" : activity.status;
+        break;
+      case 'email':
+        actionText = "Sent email";
+        statusText = activity.status === 'completed' ? "Sent" : activity.status;
+        break;
+      case 'meeting':
+        actionText = "Had a meeting";
+        statusText = activity.status === 'completed' ? "Completed" : activity.status;
+        break;
+      case 'note':
+        actionText = "Added a note";
+        statusText = "";
+        break;
+      default:
+        actionText = "Interacted with lead";
+        statusText = activity.status;
+    }
+    
+    return {
+      ...activity,
+      actionText,
+      statusText,
+      durationFormatted: activity.duration ? formatDuration(activity.duration) : null,
+    };
+  });
+  
+  // Enrich followup data with status descriptions
+  const enrichedFollowUps = followUps.map(followup => {
+    // Add descriptive text for followup statuses
+    let statusDescription = "";
+    
+    switch (followup.status) {
+      case 'pending':
+        statusDescription = "Scheduled";
+        break;
+      case 'completed':
+        statusDescription = "Completed";
+        break;
+      case 'rescheduled':
+        statusDescription = "Rescheduled";
+        break;
+      case 'missed':
+        statusDescription = "Missed";
+        break;
+      default:
+        statusDescription = followup.status;
+    }
+    
+    // Calculate remaining time until scheduled followup
+    const isOverdue = new Date(followup.scheduled) < new Date() && followup.status === 'pending';
+    const timeUntil = getTimeUntil(followup.scheduled);
+    
+    return {
+      ...followup,
+      statusDescription,
+      isOverdue,
+      timeUntil: followup.status === 'pending' ? timeUntil : null,
+    };
+  });
 
   // Create response object with all related data
-
   return res.status(200).json(
     new ApiResponse(
       200,
       {
         lead,
-        followUps,
-        activities,
+        followUps: enrichedFollowUps,
+        activities: enrichedActivities,
       },
       'Lead fetched successfully!'
     )
@@ -493,66 +615,180 @@ const assignLead = asyncHandler(async (req, res, next) => {
     );
 });
 
-// get all activities for admin
+// get activities based on user role
 const getActivities = asyncHandler(async (req, res, next) => {
-  const activities = await Activity.aggregate([
-    { $sort: { createdAt: -1 } },
-    { $limit: 5 },
-    {
-      $lookup: {
-        from: "users", // Make sure this matches your collection name!
-        localField: "user",
-        foreignField: "_id",
-        as: "userInfo"
+  try {
+    // First check if there are any activities at all in the database
+    const totalCount = await Activity.countDocuments({});
+    console.log(`Total activities in database: ${totalCount}`);
+    
+    // Base pipeline stages
+    const baseStages = [
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: "users",
+          localField: "user",
+          foreignField: "_id",
+          as: "userInfo"
+        }
+      },
+      {
+        $unwind: {
+          path: "$userInfo",
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $lookup: {
+          from: "leads",
+          localField: "lead",
+          foreignField: "_id",
+          as: "leadInfo"
+        }
+      },
+      {
+        $unwind: {
+          path: "$leadInfo",
+          preserveNullAndEmptyArrays: true
+        }
       }
-    },
-    {
-      $unwind: {
-        path: "$userInfo",
-        preserveNullAndEmptyArrays: true
-      }
-    },
-    {
-      $lookup: {
-        from: "leads", // Make sure this matches your collection name!
-        localField: "lead",
-        foreignField: "_id",
-        as: "leadInfo"
-      }
-    },
-    {
-      $unwind: {
-        path: "$leadInfo",
-        preserveNullAndEmptyArrays: true
-      }
-    },
-    {
-      $project: {
-        _id: 1,
-        type: 1,
-        status: 1,
-        duration: 1,
-        notes: 1,
-        createdAt: 1,
-        "userInfo.name": 1,
-        "userInfo.email": 1,
-        "leadInfo.name": 1,
-        "leadInfo.phone": 1,
-      }
-    }
-  ]);
-
-  if (!activities || activities.length === 0) {
-    throw new ApiError(404, "No activities found");
+    ];
+  // Add match stage based on user role
+  let matchStage = {};
+  // If the user is an employee, only show their activities
+  if (req.user.role !== 'admin') {
+    // Convert req.user._id to ObjectId for proper matching
+    matchStage = { $match: { user: new mongoose.Types.ObjectId(req.user._id.toString()) } };
+    baseStages.unshift(matchStage);
   }
 
+  // Limit the number of results (adjust as needed)
+  const limitStage = { $limit: req.query.limit ? parseInt(req.query.limit) : 10 };
+  baseStages.splice(1, 0, limitStage);
+  
+  // Add formatted fields and project needed fields
+  const projectStage = {
+    $project: {
+      _id: 1,
+      type: 1,
+      status: 1,
+      duration: 1,
+      notes: 1,
+      createdAt: 1,
+      formattedDate: {
+        $dateToString: { format: "%Y-%m-%d %H:%M", date: "$createdAt", timezone: "UTC" }
+      },
+      timeAgo: {
+        $function: {
+          body: function(createdAt) {
+            const now = new Date();
+            const created = new Date(createdAt);
+            const diffMs = now - created;
+            
+            // Convert to appropriate units
+            const diffSecs = Math.floor(diffMs / 1000);
+            const diffMins = Math.floor(diffSecs / 60);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+            
+            if (diffDays > 0) {
+              return diffDays + " day(s) ago";
+            } else if (diffHours > 0) {
+              return diffHours + " hour(s) ago";
+            } else if (diffMins > 0) {
+              return diffMins + " minute(s) ago";
+            } else {
+              return "just now";
+            }
+          },
+          args: ["$createdAt"],
+          lang: "js"
+        }
+      },
+      activityLabel: {
+        $switch: {
+          branches: [
+            { case: { $eq: ["$type", "call"] }, then: "Made a call" },
+            { case: { $eq: ["$type", "whatsapp"] }, then: "Sent WhatsApp message" },
+            { case: { $eq: ["$type", "email"] }, then: "Sent email" },
+            { case: { $eq: ["$type", "meeting"] }, then: "Had a meeting" },
+            { case: { $eq: ["$type", "note"] }, then: "Added a note" }
+          ],
+          default: "Interacted with lead"
+        }
+      },
+      statusLabel: {
+        $switch: {
+          branches: [
+            { case: { $eq: ["$status", "connected"] }, then: "Connected" },
+            { case: { $eq: ["$status", "not-answered"] }, then: "No answer" },
+            { case: { $eq: ["$status", "attempted"] }, then: "Attempted" },
+            { case: { $eq: ["$status", "completed"] }, then: "Completed" }
+          ],
+          default: "$status"
+        }
+      },
+      formattedDuration: {
+        $cond: [
+          { $gt: ["$duration", 0] },
+          {
+            $concat: [
+              { $toString: { $floor: { $divide: ["$duration", 60] } } },
+              "m ",
+              { $toString: { $mod: ["$duration", 60] } },
+              "s"
+            ]
+          },
+          null
+        ]
+      },
+      "userInfo.name": 1,
+      "userInfo.email": 1,
+      "userInfo._id": 1,
+      "leadInfo.name": 1,
+      "leadInfo.phone": 1,
+      "leadInfo._id": 1,
+      "leadInfo.status": 1
+    }
+  };
+    baseStages.push(projectStage);  // Execute the aggregation pipeline
+  console.log("Executing aggregation pipeline with stages:", JSON.stringify(baseStages, null, 2));
+  
+  let activities = [];
+  try {
+    activities = await Activity.aggregate(baseStages);
+    console.log(`Aggregation returned ${activities ? activities.length : 0} activities`);
+  } catch (aggError) {
+    console.error("Aggregation pipeline error:", aggError);
+    
+    // Fallback to simple find query if aggregation fails
+    console.log("Using fallback simple query method");
+    const query = req.user.role !== 'admin' ? { user: req.user._id } : {};
+    activities = await Activity.find(query)
+      .sort({ createdAt: -1 })
+      .limit(req.query.limit ? parseInt(req.query.limit) : 10)
+      .populate('user', 'name email _id')
+      .populate('lead', 'name phone _id status')
+      .lean();
+  }
+
+  // Always return a valid response, with empty array if no activities
   return res
     .status(200)
-    .json(new ApiResponse(200, activities, "Latest activities fetched successfully"));
+    .json(new ApiResponse(200, { 
+      count: activities.length,
+      activities: activities || [],
+      user: {
+        id: req.user._id,
+        role: req.user.role
+      }
+    }, activities.length > 0 ? "Activities fetched successfully" : "No activities found"));
+  } catch (error) {
+    console.error("Error fetching activities:", error);
+    return res.status(500).json(new ApiResponse(500, null, "Error fetching activities"));
+  }
 });
-
-
-
 
 export {
   getLeads,

@@ -5,10 +5,13 @@ import {
   createCompanySetting,
   updateCompanySetting,
   deleteCompanySetting,
-  getDefaultCompanySetting
-} from '../controllers/companySettings.controller.js';
+  getDefaultCompanySetting,
+  getAdminDashboardStats,
+  getUserPerformance,
+  getCompanyHealth
+} from '../controllers/setting.controller.js';
 
-import { verifyJWT } from '../middlewares/auth.middleware.js';
+import { verifyJWT } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
@@ -50,5 +53,26 @@ router.put('/:id', updateCompanySetting);
  * @desc    Delete company setting
  */
 router.delete('/:id', deleteCompanySetting);
+
+/**
+ * @route   GET /api/company-settings/admin/dashboard-stats
+ * @desc    Get admin dashboard statistics
+ * @access  Private/Admin
+ */
+router.get('/admin/dashboard-stats', getAdminDashboardStats);
+
+/**
+ * @route   GET /api/company-settings/admin/user-performance
+ * @desc    Get user performance statistics
+ * @access  Private/Admin
+ */
+router.get('/admin/user-performance', getUserPerformance);
+
+/**
+ * @route   GET /api/company-settings/admin/company-health
+ * @desc    Get company health metrics
+ * @access  Private/Admin
+ */
+router.get('/admin/company-health', getCompanyHealth);
 
 export default router;
