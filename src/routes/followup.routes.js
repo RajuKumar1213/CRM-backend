@@ -9,6 +9,7 @@ import {
   getTodayFollowUps,
   getOverdueFollowUps,
   getUpcomingFollowUps,
+  getLeadFollowUps,
 } from '../controllers/followUp.controller.js';
 import { verifyJWT } from '../middleware/auth.middleware.js';
 
@@ -16,6 +17,7 @@ const router = Router();
 
 router.route('/get-all').get(verifyJWT, getFollowUps);
 router.route('/:leadId/fetch').get(verifyJWT, getFollowUp);
+router.route('/lead/:leadId').get(verifyJWT, getLeadFollowUps);  // New route for lead follow-ups
 router.route('/:leadId/create').post(verifyJWT, createFollowUp);
 router.route('/:followUpId/update').patch(verifyJWT, updateFollowUp);
 router.route('/:followUpId/delete').delete(verifyJWT, deleteFollowUp);

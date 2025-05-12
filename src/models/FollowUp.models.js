@@ -19,11 +19,16 @@ const FollowUpSchema = new mongoose.Schema({
     type: String,
     enum: ['call', 'whatsapp', 'email', 'meeting', 'other'],
     default: 'call',
-  },
+  },  
   status: {
     type: String,
-    enum: ['pending', 'completed', 'rescheduled', 'missed'],
-    default: 'pending',
+    enum: [
+      'new',
+      'in-progress',
+      'won',
+      'lost'
+    ],
+    default: 'new',
   },
   notes: {
     type: String,

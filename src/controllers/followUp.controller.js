@@ -8,7 +8,6 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { scheduleFollowUp } from '../utils/followUpScheduler.js';
 import { Notification } from '../models/Notification.models.js';
 import { FollowUp } from '../models/FollowUp.models.js';
-import Api from 'twilio/lib/rest/Api.js';
 
 // @desc    Get all follow-ups
 // @route   GET /api/v1/followups
@@ -187,11 +186,30 @@ const createFollowUp = asyncHandler(async (req, res, next) => {
     );
   }
 
+  // Set followUp status to lead status if not provided
+  if (!req.body.status) {
+    req.body.status = lead.status || 'new';
+  }
   const followUp = await FollowUp.create(req.body);
+
+  // Update lead status if this is the first follow-up and lead is new
+  if (lead.status === 'new' && req.body.status !== 'missed') {
+    // Update lead status to 'contacted' since we're now scheduling follow-ups
+    await Lead.findByIdAndUpdate(leadId, { status: 'contacted' });
+    
+    // Log the status change activity
+    await Activity.create({
+      lead: lead._id,
+      user: req.user._id,
+      type: 'note',
+      status: 'completed',
+      notes: `Lead status changed from new to contacted due to follow-up creation`,
+    });
+  }
 
   // Create notification for the assignee if different from creator
   if (req.body.assignedTo && req.body.assignedTo !== req.user._id) {
-    await notificationService.createNotification(
+    await Notification.createNotification(
       req.body.assignedTo,
       'Follow-Up Assigned',
       `A follow-up for lead ${lead.name} has been assigned to you for ${new Date(followUp.scheduled).toLocaleDateString()}.`,
@@ -226,25 +244,89 @@ const updateFollowUp = asyncHandler(async (req, res) => {
     );
   }
 
-  // Check if status changed to 'completed' and add log
+  // Check if status changed and add log
   const statusChanged =
     req.body.status &&
-    req.body.status === 'completed' &&
-    followUp.status !== 'completed';
+    req.body.status !== followUp.status;
 
   followUp = await FollowUp.findByIdAndUpdate(followUpId, req.body, {
     new: true,
     runValidators: true,
   });
 
-  // If status changed to completed, log activity
+  // If status changed, update the lead status accordingly
   if (statusChanged) {
+    // Find the associated lead
+    const lead = await Lead.findById(followUp.lead);
+    
+    if (lead) {
+      let shouldUpdateLead = false;
+      let newLeadStatus = lead.status;
+      
+      // Map follow-up status to lead status
+      switch(req.body.status) {
+        case 'completed':
+          // Move lead to the next stage if completed successfully
+          if (lead.status === 'new') {
+            newLeadStatus = 'contacted';
+            shouldUpdateLead = true;
+          } else if (lead.status === 'contacted') {
+            newLeadStatus = 'qualified';
+            shouldUpdateLead = true;
+          }
+          break;
+        case 'rescheduled':
+          // If follow-up is rescheduled, make sure lead status is at least 'contacted'
+          if (lead.status === 'new') {
+            newLeadStatus = 'contacted';
+            shouldUpdateLead = true;
+          }
+          break;
+        case 'missed':
+          // No change in lead status on missed follow-up
+          break;
+        case 'pending':
+          // No change in lead status when setting back to pending
+          break;
+      }
+      
+      // Update the lead status if needed
+      if (shouldUpdateLead) {
+        await Lead.findByIdAndUpdate(lead._id, { status: newLeadStatus });
+        
+        // Log activity for status change
+        await Activity.create({
+          lead: lead._id,
+          user: req.user._id,
+          type: 'note',
+          status: 'completed',
+          notes: `Lead status changed from ${lead.status} to ${newLeadStatus} due to follow-up status change`,
+        });
+      }
+    }
+  }
+
+  // Always update the lead status to match the followUp status if it changed
+  if (statusChanged) {
+    await Lead.findByIdAndUpdate(followUp.lead, { status: req.body.status });
+    // Optionally, log activity for status change
+    await Activity.create({
+      lead: followUp.lead,
+      user: req.user._id,
+      type: 'note',
+      status: 'completed',
+      notes: `Lead status changed to ${req.body.status} due to follow-up status change`,
+    });
+  }
+
+  // If status changed to completed, log activity
+  if (statusChanged && req.body.status === 'completed') {
     await Activity.create({
       user: req.user._id,
       lead: followUp.lead,
       action: 'follow-up-completed',
       type: followUp.followUpType,
-      description: `Completed follow-up: ${followUp.title}`,
+      description: `Completed follow-up: ${followUp.title || 'Follow-up'}`,
       referenceId: followUp._id,
       referenceModel: 'FollowUp',
     });
@@ -273,10 +355,7 @@ const updateFollowUp = asyncHandler(async (req, res) => {
     );
   }
 
-  res.status(200).json({
-    success: true,
-    data: followUp,
-  });
+  
 
   return res
     .status(200)
@@ -460,16 +539,17 @@ const getOverdueFollowUps = asyncHandler(async (req, res) => {
 // @route   GET /api/v1/followups/upcoming
 // @access  Private
 const getUpcomingFollowUps = asyncHandler(async (req, res, next) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date();
+  tomorrow.setHours(0, 0, 0, 0);
+  tomorrow.setDate(tomorrow.getDate() + 1);
 
-  const nextWeek = new Date(today);
-  nextWeek.setDate(nextWeek.getDate() + 7);
+  const nextWeek = new Date(tomorrow);
+  nextWeek.setDate(nextWeek.getDate() + 6); // total 7 days from today
 
-  const followUps = await FollowUp.find({ 
+  const followUps = await FollowUp.find({
     assignedTo: req.user._id,
     scheduled: {
-      $gte: today,
+      $gte: tomorrow,
       $lte: nextWeek,
     },
     status: { $ne: 'completed' },
@@ -489,6 +569,7 @@ const getUpcomingFollowUps = asyncHandler(async (req, res, next) => {
     )
   );
 });
+
 
 // @desc    Snooze a follow-up
 // @route   PUT /api/v1/followups/:id/snooze
@@ -542,6 +623,59 @@ const snoozeFollowUp = asyncHandler(async (req, res, next) => {
   });
 });
 
+// @desc    Get all follow-ups for a specific lead
+// @route   GET /api/v1/followups/lead/:leadId
+// @access  Private
+const getLeadFollowUps = asyncHandler(async (req, res) => {
+  const { leadId } = req.params;
+
+  // Validate leadId
+  if (!leadId) {
+    throw new ApiError(400, 'Lead ID is required');
+  }
+
+  // Find the lead to verify ownership/access
+  const lead = await Lead.findById(leadId);
+  if (!lead) {
+    throw new ApiError(404, `Lead not found with id of ${leadId}`);
+  }
+
+  // Make sure user is lead owner or admin
+  if (!lead.assignedTo.equals(req.user._id) && req.user.role !== 'admin') {
+    throw new ApiError(
+      401,
+      `User ${req.user._id} is not authorized to view follow-ups for this lead`
+    );
+  }
+
+  // Get all follow-ups for this lead, sorted by scheduled date (most recent first)
+  const followUps = await FollowUp.find({ lead: leadId })
+    .sort('-scheduled')
+    .populate({
+      path: 'assignedTo',
+      select: 'name email'
+    });
+
+  // Optional sort parameter with default sorting
+  if (!followUps.length) {
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        { count: 0, followUps: [] },
+        'No follow-ups found for this lead'
+      )
+    );
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { count: followUps.length, followUps },
+      'Lead follow-ups fetched successfully'
+    )
+  );
+});
+
 export {
   getFollowUp,
   getFollowUps,
@@ -553,4 +687,5 @@ export {
   getTodayFollowUps,
   getUpcomingFollowUps,
   snoozeFollowUp,
+  getLeadFollowUps,
 };

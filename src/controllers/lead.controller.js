@@ -48,7 +48,7 @@ const getTimeUntil = (dateTime) => {
   const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
   if (hours > 0) return `in ${hours} hour(s)`;
   
-  const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+  const minutes = Math.floor((diffMs % (1000 * 60)) / (1000 * 60));
   return `in ${minutes} minute(s)`;
 };
 
@@ -155,11 +155,38 @@ const getLeads = asyncHandler(async (req, res, next) => {
   //   },
   // ]);
 
-  const leads = await Lead.find({}).populate('assignedTo', 'name email _id');
+  const leads = await Lead.find({}).populate('assignedTo', 'name email _id').lean();
+
+  // For each lead, check if the latest follow-up is completed
+  const leadIds = leads.map((lead) => lead._id);
+  const followUps = await FollowUp.aggregate([
+    { $match: { lead: { $in: leadIds } } },
+    { $sort: { scheduled: -1 } },
+    {
+      $group: {
+        _id: "$lead",
+        latestStatus: { $first: "$status" },
+        latestFollowUpId: { $first: "$_id" },
+      },
+    },
+  ]);
+  const followUpStatusMap = {};
+  followUps.forEach((fu) => {
+    followUpStatusMap[fu._id.toString()] = fu.latestStatus;
+  });
+
+  // Override status in response if latest follow-up is completed
+  const leadsWithStatus = leads.map((lead) => {
+    const latestFollowUpStatus = followUpStatusMap[lead._id.toString()];
+    if (latestFollowUpStatus === "completed") {
+      return { ...lead, status: "completed" };
+    }
+    return lead;
+  });
 
   return res
     .status(200)
-    .json(new ApiResponse(200, leads, 'Leads fetched successfully'));
+    .json(new ApiResponse(200, leadsWithStatus, 'Leads fetched successfully'));
 });
 
 // @desc    Get single lead
@@ -167,17 +194,43 @@ const getLeads = asyncHandler(async (req, res, next) => {
 // @access  Privat
 //
 
-const getUserLeads = asyncHandler(async (req, res)=> {
+const getUserLeads = asyncHandler(async (req, res) => {
+  // Fetch all leads assigned to the user
+  let leads = await Lead.find({ assignedTo: req.user._id }).select("-messageSid").lean();
 
-  const leads = await Lead.find({assignedTo: req.user._id}).select("-messageSid")
-
-  if(!leads){
-    throw new ApiError(404, "Leads not found")
+  if (!leads) {
+    throw new ApiError(404, "Leads not found");
   }
 
-  return res.status(200).json(new ApiResponse(200, leads , "Leads fetched successfully"))
+  // For each lead, check if the latest follow-up is completed
+  const leadIds = leads.map((lead) => lead._id);
+  const followUps = await FollowUp.aggregate([
+    { $match: { lead: { $in: leadIds } } },
+    { $sort: { scheduled: -1 } },
+    {
+      $group: {
+        _id: "$lead",
+        latestStatus: { $first: "$status" },
+        latestFollowUpId: { $first: "$_id" },
+      },
+    },
+  ]);
+  const followUpStatusMap = {};
+  followUps.forEach((fu) => {
+    followUpStatusMap[fu._id.toString()] = fu.latestStatus;
+  });
 
-})
+  // Override status in response if latest follow-up is completed
+  leads = leads.map((lead) => {
+    const latestFollowUpStatus = followUpStatusMap[lead._id.toString()];
+    if (latestFollowUpStatus === "completed") {
+      return { ...lead, status: "completed" };
+    }
+    return lead;
+  });
+
+  return res.status(200).json(new ApiResponse(200, leads, "Leads fetched successfully"));
+});
 
 const getLead = asyncHandler(async (req, res) => {
   const { leadId } = req.params;
