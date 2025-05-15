@@ -8,7 +8,10 @@ import {
   getDefaultCompanySetting,
   getAdminDashboardStats,
   getUserPerformance,
-  getCompanyHealth
+  getCompanyHealth,
+  addContactNumber,
+  removeContactNumber,
+  patchCompanySetting
 } from '../controllers/setting.controller.js';
 
 import { verifyJWT } from '../middleware/auth.middleware.js';
@@ -74,5 +77,23 @@ router.get('/admin/user-performance', getUserPerformance);
  * @access  Private/Admin
  */
 router.get('/admin/company-health', getCompanyHealth);
+
+/**
+ * @route   POST /api/company-settings/:id/contact
+ * @desc    Add contact number to company setting
+ */
+router.post('/:id/contact', addContactNumber);
+
+/**
+ * @route   DELETE /api/company-settings/:id/contact/:number
+ * @desc    Remove contact number from company setting
+ */
+router.delete('/:id/contact/:number', removeContactNumber);
+
+/**
+ * @route   PATCH /api/company-settings/:id
+ * @desc    Partially update company setting
+ */
+router.patch('/:id', patchCompanySetting);
 
 export default router;

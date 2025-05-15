@@ -31,14 +31,18 @@ const LeadSchema = new mongoose.Schema(
     },
     message: {
       type: String,
-    },
-    status: {
+    },    status: {
       type: String,
       enum: [
         'new',
+        'contacted',
+        'qualified',
+        'negotiating',
         'in-progress',
+        'proposal-sent',
         'won',
-        'lost'
+        'lost',
+        'on-hold'
       ],
       default: 'new',
     },

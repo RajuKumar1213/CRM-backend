@@ -11,6 +11,7 @@ import {
   getUserLeads,
   updateLead,
 } from '../controllers/lead.controller.js';
+import { getFollowUps } from '../controllers/followUp.controller.js';
 
 const router = Router();
 
@@ -21,6 +22,7 @@ router.route('/create').post(verifyJWT, createLead);
 router.route('/update/:leadId').patch(verifyJWT, updateLead);
 router.route('/delete/:leadId').delete(verifyJWT, deleteLead);
 router.route('/activities').get(verifyJWT, getActivities);
+router.route('/followups').get(verifyJWT, getFollowUps);
 
 router.route('/webhook').post(getLeadFromWhatsapp);
 

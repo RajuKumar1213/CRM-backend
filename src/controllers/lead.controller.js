@@ -195,8 +195,46 @@ const getLeads = asyncHandler(async (req, res, next) => {
 //
 
 const getUserLeads = asyncHandler(async (req, res) => {
-  // Fetch all leads assigned to the user
-  let leads = await Lead.find({ assignedTo: req.user._id }).select("-messageSid").lean();
+  // Extract search and filter parameters from query
+  const { search, status, source, priority } = req.query;
+  
+  // Build the base query - always filter by current user's assigned leads
+  let query = {
+    assignedTo: req.user._id
+  };
+  
+  // Add status filter if provided
+  if (status && status !== 'All Statuses') {
+    // Convert UI status label to database format if needed
+    let dbStatus = status.toLowerCase();
+    if (dbStatus === 'closed-won') dbStatus = 'won';
+    if (dbStatus === 'closed-lost') dbStatus = 'lost';
+    query.status = dbStatus;
+  }
+  
+  // Add source filter if provided
+  if (source && source !== 'All Sources') {
+    query.source = source.toLowerCase();
+  }
+  
+  // Add priority filter if provided
+  if (priority && priority !== 'All Priorities') {
+    query.priority = priority.toLowerCase();
+  }
+  
+  // Add search term if provided - search in name, email, phone, product, and notes
+  if (search) {
+    query.$or = [
+      { name: { $regex: search, $options: 'i' } },
+      { email: { $regex: search, $options: 'i' } },
+      { phone: { $regex: search, $options: 'i' } },
+      { product: { $regex: search, $options: 'i' } },
+      { notes: { $regex: search, $options: 'i' } }
+    ];
+  }
+  
+  // Execute the query
+  let leads = await Lead.find(query).select("-messageSid").lean();
 
   if (!leads) {
     throw new ApiError(404, "Leads not found");
@@ -532,6 +570,13 @@ const updateLead = asyncHandler(async (req, res, next) => {
   // Check if status is being updated
   const statusChanged = req.body.status && req.body.status !== lead.status;
   const oldStatus = lead.status;
+  // Validate status if it's being updated
+  if (statusChanged) {
+    const validStatuses = ['new', 'contacted', 'qualified', 'negotiating', 'in-progress', 'proposal-sent', 'won', 'lost', 'on-hold'];
+    if (!validStatuses.includes(req.body.status)) {
+      throw new ApiError(400, `Invalid status value. Must be one of: ${validStatuses.join(', ')}`);
+    }
+  }
 
   lead = await Lead.findByIdAndUpdate(leadId, req.body, {
     new: true,
@@ -546,15 +591,13 @@ const updateLead = asyncHandler(async (req, res, next) => {
       type: 'note',
       status: 'completed',
       notes: `Lead status changed from ${oldStatus} to ${lead.status}`,
-    });
-
-    // Schedule follow-up based on new status if auto follow-up is enabled
+    });    // Schedule follow-up based on new status if auto follow-up is enabled
     const settings = await CompanySetting.findOne();
     if (
       settings &&
       settings.autoFollowupEnabled &&
-      lead.status !== 'closed-won' &&
-      lead.status !== 'closed-lost'
+      lead.status !== 'won' &&
+      lead.status !== 'lost'
     ) {
       await scheduleFollowUp(
         lead,
@@ -668,178 +711,119 @@ const assignLead = asyncHandler(async (req, res, next) => {
     );
 });
 
-// get activities based on user role
-const getActivities = asyncHandler(async (req, res, next) => {
+// @desc    Get activities by user role
+// @route   GET /api/v1/leads/activities
+// @access  Private
+const getActivities = asyncHandler(async (req, res) => {
   try {
     // First check if there are any activities at all in the database
     const totalCount = await Activity.countDocuments({});
     console.log(`Total activities in database: ${totalCount}`);
-    
-    // Base pipeline stages
-    const baseStages = [
-      { $sort: { createdAt: -1 } },
-      {
-        $lookup: {
-          from: "users",
-          localField: "user",
-          foreignField: "_id",
-          as: "userInfo"
-        }
-      },
-      {
-        $unwind: {
-          path: "$userInfo",
-          preserveNullAndEmptyArrays: true
-        }
-      },
-      {
-        $lookup: {
-          from: "leads",
-          localField: "lead",
-          foreignField: "_id",
-          as: "leadInfo"
-        }
-      },
-      {
-        $unwind: {
-          path: "$leadInfo",
-          preserveNullAndEmptyArrays: true
-        }
-      }
-    ];
-  // Add match stage based on user role
-  let matchStage = {};
-  // If the user is an employee, only show their activities
-  if (req.user.role !== 'admin') {
-    // Convert req.user._id to ObjectId for proper matching
-    matchStage = { $match: { user: new mongoose.Types.ObjectId(req.user._id.toString()) } };
-    baseStages.unshift(matchStage);
-  }
 
-  // Limit the number of results (adjust as needed)
-  const limitStage = { $limit: req.query.limit ? parseInt(req.query.limit) : 10 };
-  baseStages.splice(1, 0, limitStage);
-  
-  // Add formatted fields and project needed fields
-  const projectStage = {
-    $project: {
-      _id: 1,
-      type: 1,
-      status: 1,
-      duration: 1,
-      notes: 1,
-      createdAt: 1,
-      formattedDate: {
-        $dateToString: { format: "%Y-%m-%d %H:%M", date: "$createdAt", timezone: "UTC" }
-      },
-      timeAgo: {
-        $function: {
-          body: function(createdAt) {
-            const now = new Date();
-            const created = new Date(createdAt);
-            const diffMs = now - created;
-            
-            // Convert to appropriate units
-            const diffSecs = Math.floor(diffMs / 1000);
-            const diffMins = Math.floor(diffSecs / 60);
-            const diffHours = Math.floor(diffMins / 60);
-            const diffDays = Math.floor(diffHours / 24);
-            
-            if (diffDays > 0) {
-              return diffDays + " day(s) ago";
-            } else if (diffHours > 0) {
-              return diffHours + " hour(s) ago";
-            } else if (diffMins > 0) {
-              return diffMins + " minute(s) ago";
-            } else {
-              return "just now";
-            }
-          },
-          args: ["$createdAt"],
-          lang: "js"
-        }
-      },
-      activityLabel: {
-        $switch: {
-          branches: [
-            { case: { $eq: ["$type", "call"] }, then: "Made a call" },
-            { case: { $eq: ["$type", "whatsapp"] }, then: "Sent WhatsApp message" },
-            { case: { $eq: ["$type", "email"] }, then: "Sent email" },
-            { case: { $eq: ["$type", "meeting"] }, then: "Had a meeting" },
-            { case: { $eq: ["$type", "note"] }, then: "Added a note" }
-          ],
-          default: "Interacted with lead"
-        }
-      },
-      statusLabel: {
-        $switch: {
-          branches: [
-            { case: { $eq: ["$status", "connected"] }, then: "Connected" },
-            { case: { $eq: ["$status", "not-answered"] }, then: "No answer" },
-            { case: { $eq: ["$status", "attempted"] }, then: "Attempted" },
-            { case: { $eq: ["$status", "completed"] }, then: "Completed" }
-          ],
-          default: "$status"
-        }
-      },
-      formattedDuration: {
-        $cond: [
-          { $gt: ["$duration", 0] },
-          {
-            $concat: [
-              { $toString: { $floor: { $divide: ["$duration", 60] } } },
-              "m ",
-              { $toString: { $mod: ["$duration", 60] } },
-              "s"
-            ]
-          },
-          null
-        ]
-      },
-      "userInfo.name": 1,
-      "userInfo.email": 1,
-      "userInfo._id": 1,
-      "leadInfo.name": 1,
-      "leadInfo.phone": 1,
-      "leadInfo._id": 1,
-      "leadInfo.status": 1
-    }
-  };
-    baseStages.push(projectStage);  // Execute the aggregation pipeline
-  console.log("Executing aggregation pipeline with stages:", JSON.stringify(baseStages, null, 2));
-  
-  let activities = [];
-  try {
-    activities = await Activity.aggregate(baseStages);
-    console.log(`Aggregation returned ${activities ? activities.length : 0} activities`);
-  } catch (aggError) {
-    console.error("Aggregation pipeline error:", aggError);
+    // Prepare query filters
+    let query = {};
     
-    // Fallback to simple find query if aggregation fails
-    console.log("Using fallback simple query method");
-    const query = req.user.role !== 'admin' ? { user: req.user._id } : {};
-    activities = await Activity.find(query)
+    // If user is not admin, only show their activities
+    if (req.user.role !== 'admin') {
+      query.user = req.user._id;
+    }
+    
+    // Get limit and page from query or use default
+    const page = parseInt(req.query.page) || 1;
+    const limit = req.query.limit ? parseInt(req.query.limit) : 10;
+    const skip = (page - 1) * limit;
+
+    // Use find() instead of aggregate for better compatibility
+    const activities = await Activity.find(query)
       .sort({ createdAt: -1 })
-      .limit(req.query.limit ? parseInt(req.query.limit) : 10)
+      .skip(skip)
+      .limit(limit)
       .populate('user', 'name email _id')
       .populate('lead', 'name phone _id status')
+      .populate('templateUsed', 'name content')
       .lean();
-  }
 
-  // Always return a valid response, with empty array if no activities
-  return res
-    .status(200)
-    .json(new ApiResponse(200, { 
-      count: activities.length,
-      activities: activities || [],
+    console.log(`Found ${activities.length} activities`);
+
+    // Enrich the activities with computed fields
+    const enrichedActivities = activities.map(activity => {
+      // Calculate time ago
+      const now = new Date();
+      const created = new Date(activity.createdAt);
+      const diffMs = now - created;
+      const diffSecs = Math.floor(diffMs / 1000);
+      const diffMins = Math.floor(diffSecs / 60);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+      
+      let timeAgo = "just now";
+      if (diffDays > 0) {
+        timeAgo = diffDays + " day(s) ago";
+      } else if (diffHours > 0) {
+        timeAgo = diffHours + " hour(s) ago";
+      } else if (diffMins > 0) {
+        timeAgo = diffMins + " minute(s) ago";
+      }
+
+      // Map activity type to label
+      const activityLabel = {
+        call: "Made a call",
+        whatsapp: "Sent WhatsApp message",
+        email: "Sent email",
+        meeting: "Had a meeting",
+        note: "Added a note"
+      }[activity.type] || "Interacted with lead";
+
+      // Map status to label
+      const statusLabel = {
+        connected: "Connected",
+        "not-answered": "No answer",
+        attempted: "Attempted",
+        completed: "Completed"
+      }[activity.status] || activity.status;
+
+      // Format duration for calls
+      let formattedDuration = null;
+      if (activity.duration && activity.duration > 0) {
+        const minutes = Math.floor(activity.duration / 60);
+        const seconds = activity.duration % 60;
+        formattedDuration = `${minutes}m ${seconds}s`;
+      }
+
+      // Format date
+      const formattedDate = new Date(activity.createdAt).toISOString().replace('T', ' ').substring(0, 16);
+
+      return {
+        ...activity,
+        timeAgo,
+        activityLabel,
+        statusLabel,
+        formattedDuration,
+        formattedDate,
+        // Keep both user/lead and userInfo/leadInfo for backward compatibility
+        userInfo: activity.user,
+        leadInfo: activity.lead
+      };
+    });
+
+    return res.status(200).json(new ApiResponse(200, { 
+      count: enrichedActivities.length,
+      activities: enrichedActivities,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalActivities: totalCount,
+        hasMore: skip + activities.length < totalCount
+      },
       user: {
         id: req.user._id,
         role: req.user.role
       }
-    }, activities.length > 0 ? "Activities fetched successfully" : "No activities found"));
+    }, enrichedActivities.length > 0 ? "Activities fetched successfully" : "No activities found"));
+
   } catch (error) {
     console.error("Error fetching activities:", error);
-    return res.status(500).json(new ApiResponse(500, null, "Error fetching activities"));
+    throw new ApiError(500, "Error fetching activities: " + error.message);
   }
 });
 

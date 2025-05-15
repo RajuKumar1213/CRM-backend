@@ -262,31 +262,64 @@ const updateFollowUp = asyncHandler(async (req, res) => {
     if (lead) {
       let shouldUpdateLead = false;
       let newLeadStatus = lead.status;
-      
-      // Map follow-up status to lead status
+        // Map follow-up status and outcome to lead status
       switch(req.body.status) {
         case 'completed':
-          // Move lead to the next stage if completed successfully
-          if (lead.status === 'new') {
-            newLeadStatus = 'contacted';
-            shouldUpdateLead = true;
-          } else if (lead.status === 'contacted') {
-            newLeadStatus = 'qualified';
-            shouldUpdateLead = true;
+          // When follow-up is completed, update lead status based on outcome
+          switch(req.body.outcome) {
+            case 'qualified':
+              newLeadStatus = 'qualified';
+              shouldUpdateLead = true;
+              break;
+            case 'negotiating':
+              newLeadStatus = 'negotiating';
+              shouldUpdateLead = true;
+              break;
+            case 'proposal-sent':
+              newLeadStatus = 'proposal-sent';
+              shouldUpdateLead = true;
+              break;
+            case 'won':
+              newLeadStatus = 'won';
+              shouldUpdateLead = true;
+              break;
+            case 'lost':
+              newLeadStatus = 'lost';
+              shouldUpdateLead = true;
+              break;
+            default:
+              // If lead is new and follow-up is completed, mark as contacted
+              if (lead.status === 'new') {
+                newLeadStatus = 'contacted';
+                shouldUpdateLead = true;
+              }
           }
           break;
         case 'rescheduled':
-          // If follow-up is rescheduled, make sure lead status is at least 'contacted'
-          if (lead.status === 'new') {
+          if (!lead.status || lead.status === 'new') {
             newLeadStatus = 'contacted';
             shouldUpdateLead = true;
           }
           break;
         case 'missed':
-          // No change in lead status on missed follow-up
+          // Don't change lead status on missed follow-ups
           break;
-        case 'pending':
-          // No change in lead status when setting back to pending
+        case 'cancelled':
+          // Optionally mark lead as on-hold when follow-up is cancelled
+          if (req.body.outcome === 'on-hold') {
+            newLeadStatus = 'on-hold';
+            shouldUpdateLead = true;
+          }
+          break;
+        case 'in-progress':
+          if (lead.status === 'new') {
+            newLeadStatus = 'contacted';
+            shouldUpdateLead = true;
+          }
+          break;
+        case 'on-hold':
+          newLeadStatus = 'on-hold';
+          shouldUpdateLead = true;
           break;
       }
       
@@ -307,16 +340,20 @@ const updateFollowUp = asyncHandler(async (req, res) => {
   }
 
   // Always update the lead status to match the followUp status if it changed
-  if (statusChanged) {
-    await Lead.findByIdAndUpdate(followUp.lead, { status: req.body.status });
-    // Optionally, log activity for status change
-    await Activity.create({
-      lead: followUp.lead,
-      user: req.user._id,
-      type: 'note',
-      status: 'completed',
-      notes: `Lead status changed to ${req.body.status} due to follow-up status change`,
-    });
+  if (statusChanged) {    // Only set allowed lead status values
+    let allowedStatuses = ['new', 'contacted', 'qualified', 'negotiating', 'in-progress', 'proposal-sent', 'won', 'lost', 'on-hold'];
+    let statusToSet = allowedStatuses.includes(req.body.outcome) ? req.body.outcome : undefined;
+    if (statusToSet) {
+      await Lead.findByIdAndUpdate(followUp.lead, { status: statusToSet });
+      // Optionally, log activity for status change
+      await Activity.create({
+        lead: followUp.lead,
+        user: req.user._id,
+        type: 'note',
+        status: 'completed',
+        notes: `Lead status changed to ${statusToSet} due to follow-up status change`,
+      });
+    }
   }
 
   // If status changed to completed, log activity
@@ -465,6 +502,7 @@ const followUps = await FollowUp.aggregate([
     $project: {
       scheduled: 1,
       status: 1,
+      'lead._id': 1,
       'lead.name': 1,
       'lead.phone': 1,
       'lead.email': 1,
@@ -517,6 +555,7 @@ const getOverdueFollowUps = asyncHandler(async (req, res) => {
       $project: {
         scheduled: 1,
         status: 1,
+        'lead._id': 1,
         'lead.name': 1,
         'lead.phone': 1,
         'lead.email': 1,

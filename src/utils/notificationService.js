@@ -1,11 +1,13 @@
 import { Notification } from '../models/Notification.models.js';
 import { User } from '../models/User.models.js';
+import { getIO } from './socket.js';
+
 /**
  * Get unread notifications for a user
  * @param {String} userId - The ID of the user
  * @returns {Promise<Array>} - Array of unread notifications
  */
-exports.getUnreadNotifications = async (userId) => {
+export const getUnreadNotifications = async (userId) => {
   return Notification.find({
     user: userId,
     isRead: false,
@@ -42,7 +44,7 @@ exports.markNotificationsAsRead = async (userId, notificationIds) => {
  * @param {String} onModel - Model name of related entity
  * @returns {Promise<Object>} - The created notification
  */
-exports.createNotification = async (
+export const createNotification = async (
   userId,
   title,
   message,
@@ -62,5 +64,15 @@ exports.createNotification = async (
     notification.onModel = onModel;
   }
 
-  return Notification.create(notification);
+  const createdNotification = await Notification.create(notification);
+  
+  // Emit to specific user's room
+  try {
+    const io = getIO();
+    io.to(userId.toString()).emit('newNotification', createdNotification);
+  } catch (error) {
+    console.error('Socket error:', error);
+  }
+
+  return createdNotification;
 };

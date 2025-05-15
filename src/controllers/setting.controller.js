@@ -524,11 +524,10 @@ export const getUserPerformance = asyncHandler(async (req, res) => {
           status: 'qualified',
           updatedAt: { $gte: start, $lte: end }
         }),
-        
-        // Closed-won leads in date range
+          // Closed-won leads in date range
         Lead.countDocuments({
           assignedTo: user._id,
-          status: 'closed-won',
+          status: 'won',
           updatedAt: { $gte: start, $lte: end }
         }),
         
@@ -642,12 +641,11 @@ export const getCompanyHealth = asyncHandler(async (req, res) => {
       };
     })
   );
-  
-  // Get closed-won leads per month for revenue estimation
+    // Get closed-won leads per month for revenue estimation
   const closedWonPerMonth = await Promise.all(
     last6Months.map(async (monthData) => {
       const closedWonCount = await Lead.countDocuments({
-        status: 'closed-won',
+        status: 'won',
         updatedAt: {
           $gte: monthData.startDate,
           $lte: monthData.endDate
@@ -662,9 +660,9 @@ export const getCompanyHealth = asyncHandler(async (req, res) => {
     })
   );
   
-  // Get recent lead conversions (closed-won in last 30 days)
+  // Get recent lead conversions (won in last 30 days)
   const recentConversions = await Lead.find({
-    status: 'closed-won',
+    status: 'won',
     updatedAt: {
       $gte: new Date(currentDate.setDate(currentDate.getDate() - 30))
     }
@@ -673,8 +671,7 @@ export const getCompanyHealth = asyncHandler(async (req, res) => {
     .select('name phone product assignedTo createdAt updatedAt')
     .limit(10)
     .lean();
-  
-  // Calculate conversion time (days from creation to closed-won)
+    // Calculate conversion time (days from creation to won)
   const conversions = recentConversions.map(lead => {
     const creationDate = new Date(lead.createdAt);
     const conversionDate = new Date(lead.updatedAt);
@@ -714,6 +711,49 @@ export const getCompanyHealth = asyncHandler(async (req, res) => {
         'Company health metrics retrieved successfully'
       )
     );
+});
+
+// @route   POST /api/company-settings/:id/contact
+// @desc    Add a contact number
+// @access  Private/Admin
+export const addContactNumber = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { number } = req.body;
+  if (req.user.role !== 'admin') throw new ApiError(401, 'Not authorized');
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid ID');
+  if (!number) throw new ApiError(400, 'Number required');
+  const companySetting = await CompanySetting.findById(id);
+  if (!companySetting) throw new ApiError(404, 'Not found');
+  if (companySetting.contactNumbers.includes(number)) throw new ApiError(400, 'Number already exists');
+  companySetting.contactNumbers.push(number);
+  await companySetting.save();
+  res.status(200).json(new ApiResponse(200, companySetting, 'Contact number added'));
+});
+
+// @route   DELETE /api/company-settings/:id/contact/:number
+// @desc    Remove a contact number
+// @access  Private/Admin
+export const removeContactNumber = asyncHandler(async (req, res) => {
+  const { id, number } = req.params;
+  if (req.user.role !== 'admin') throw new ApiError(401, 'Not authorized');
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid ID');
+  const companySetting = await CompanySetting.findById(id);
+  if (!companySetting) throw new ApiError(404, 'Not found');
+  companySetting.contactNumbers = companySetting.contactNumbers.filter(n => n !== number);
+  await companySetting.save();
+  res.status(200).json(new ApiResponse(200, companySetting, 'Contact number removed'));
+});
+
+// @route   PATCH /api/company-settings/:id
+// @desc    Partial update of company settings
+// @access  Private/Admin
+export const patchCompanySetting = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (req.user.role !== 'admin') throw new ApiError(401, 'Not authorized');
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid ID');
+  const updated = await CompanySetting.findByIdAndUpdate(id, { $set: req.body }, { new: true, runValidators: true });
+  if (!updated) throw new ApiError(404, 'Not found');
+  res.status(200).json(new ApiResponse(200, updated, 'Company setting updated'));
 });
 
 // Helper function to calculate time ago

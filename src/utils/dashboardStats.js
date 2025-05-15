@@ -38,11 +38,10 @@ exports.getAdminDashboardStats = async () => {
       Lead.aggregate([
         {
           $group: {
-            _id: null,
-            totalLeads: { $sum: 1 },
+            _id: null,            totalLeads: { $sum: 1 },
             closedWon: {
               $sum: {
-                $cond: [{ $eq: ['$status', 'closed-won'] }, 1, 0]
+                $cond: [{ $eq: ['$status', 'won'] }, 1, 0]
               }
             }
           }

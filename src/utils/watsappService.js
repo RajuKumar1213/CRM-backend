@@ -34,32 +34,42 @@ export const sendWhatsAppMessage = async (
       Lead.findById(leadId),
       WhatsappTemplate.findById(templateId),
       CompanySetting.findOne(),
-    ]);
-
-    if (!lead) {
+    ]);    if (!lead) {
       throw new ApiError(404, `Lead not found with id ${leadId}`);
     }
+    
+    // Convert old status values to new ones if needed
+    if (lead.status === 'closed-won') {
+      lead.status = 'won';
+      await lead.save();
+    }
+    if (lead.status === 'closed-lost') {
+      lead.status = 'lost';
+      await lead.save();
+    }
+    
     if (!template && templateId) {
       throw new ApiError(404, `Template not found with id ${templateId}`);
     }
     if (!settings) {
       throw new ApiError(404, 'Company settings not found');
-    }
-
-    // Create WhatsApp message record
+    }    // Create WhatsApp message record with proper sentFrom
+    const phoneNumber = senderPhone || 'whatsapp:+14155238886'; // Fallback to Twilio sandbox
     message = await WhatsAppMessage.create({
       lead: leadId,
       user: userId,
       template: templateId || null,
-      content: messageContent,
-      status: 'queued',
-      sentFrom: senderPhone || 'whatsapp:+14155238886', // Fallback to Twilio sandbox
+      content: messageContent, 
+      status: 'sent',
+      sentFrom: phoneNumber,
       sentTo: lead.phone,
     });
 
     if (!message) {
       throw new ApiError(500, 'Failed to create WhatsApp message');
     }
+
+         console.log(senderPhone, lead.phone, messageContent);
 
     // Prepare API request based on provider
     let apiResponse;
@@ -96,6 +106,8 @@ export const sendWhatsAppMessage = async (
         if (!accountSid || !authToken) {
           throw new ApiError(500, 'Twilio credentials not configured');
         }
+
+   
 
         const client = twilio(accountSid, authToken);
         apiResponse = await client.messages.create({
