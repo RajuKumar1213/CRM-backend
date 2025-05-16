@@ -1,4 +1,3 @@
-import { CallLog } from '../models/CallLogs.models.js';
 import { Lead } from '../models/Lead.models.js';
 import { User } from '../models/User.models.js';
 import { Activity } from '../models/Activity.models.js';
@@ -11,6 +10,8 @@ import {
   updateNumberUsage,
 } from '../utils/phoneNumberRotation.js';
 import asyncHandler from '../utils/asyncHandler.js';
+import { scheduleFollowUp } from '../utils/followUpScheduler.js';
+import { CallLog } from '../models/CallLogs.models.js';
 
 // @route   POST api/calls/initiate
 // @desc    Initiate a call to a lead
@@ -55,8 +56,7 @@ const initiateCall = asyncHandler(async (req, res) => {
       lead.phone
     );
 
-    
-
+  
     return res
       .status(200)
       .json(new ApiResponse(200, call, 'Call initiated successfully'));
@@ -427,6 +427,104 @@ const getCallQueueById = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, queue, 'Call queue retrieved successfully'));
 });
 
+// @route   POST api/calls/log
+// @desc    Log a call
+// @access  Private
+const logCall = asyncHandler(async (req, res) => {
+  const { leadId, status, duration, notes, followUpDateTime } = req.body;
+
+  // Create call log
+  const call = await CallLog.create({
+    lead: leadId,
+    user: req.user._id,
+    status,
+    duration: duration || 0,
+    notes,
+    callType: 'outgoing', // Since this is manual logging
+    calledFrom: req.user.phone || 'unknown',
+    calledTo: (await Lead.findById(leadId))?.phone || 'unknown'
+  });
+
+  // Create activity
+  await Activity.create({
+    type: 'call',
+    user: req.user._id,
+    lead: leadId,
+    details: {
+      status,
+      duration,
+      notes,
+    },
+  });
+
+  // Update lead's last contacted time
+  await Lead.findByIdAndUpdate(leadId, {
+    lastContacted: new Date(),
+    $inc: { totalCalls: 1 },
+  });
+
+  // Schedule follow-up if requested
+  if (followUpDateTime) {
+    await scheduleFollowUp({
+      lead: leadId,
+      user: req.user._id,
+      scheduled: new Date(followUpDateTime),
+      type: 'call',
+      notes: `Follow-up from call on ${new Date().toLocaleDateString()}`,
+    });
+  }
+
+  return res.status(201).json(
+    new ApiResponse(201, call, 'Call logged successfully')
+  );
+});
+
+// @route   GET api/calls/history/:leadId
+// @desc    Get call history for a lead
+// @access  Private
+const getCallHistory = asyncHandler(async (req, res) => {
+  const { leadId } = req.params;
+
+  const calls = await CallLog.find({ lead: leadId, isQueue: false })
+    .populate('user', 'name email')
+    .sort('-startTime');
+
+  return res.status(200).json(
+    new ApiResponse(200, calls, 'Call history retrieved successfully')
+  );
+});
+
+// @route   GET api/calls/stats
+// @desc    Get call statistics
+// @access  Private
+const getCallStats = asyncHandler(async (req, res) => {
+  const { userId, startDate, endDate } = req.query;
+
+  const matchQuery = { isQueue: false };
+  if (userId) matchQuery.user = userId;
+  if (startDate && endDate) {
+    matchQuery.startTime = {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate),
+    };
+  }
+
+  const stats = await CallLog.aggregate([
+    { $match: matchQuery },
+    {
+      $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+        totalDuration: { $sum: '$duration' },
+      },
+    },
+  ]);
+
+  return res.status(200).json(
+    new ApiResponse(200, stats, 'Call statistics retrieved successfully')
+  );
+});
+
 export {
   initiateCall,
   dismissCall,
@@ -438,4 +536,7 @@ export {
   updateQueueLead,
   getCallQueues,
   getCallQueueById,
+  logCall,
+  getCallHistory,
+  getCallStats,
 };

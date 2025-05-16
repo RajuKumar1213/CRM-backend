@@ -69,20 +69,30 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
   if (!senderNumber) {
     throw new ApiResponse(400, 'Not any sender number is available.');
   }
-
   try {
     // Send message using WhatsApp service
-    const result = await sendWhatsAppMessage(
-      lead._id,
-      req.user._id,
-      templateId,
-      senderNumber.phoneNumber,
+    const result = await sendWhatsAppMessage({
+      leadId: lead._id,
+      userId: req.user._id,
+      templateId: templateId || null,
+      senderPhone: senderNumber.phoneNumber,
+      recipientPhone: lead.phone,
       messageContent
-    );
+    });
 
-    if (!result) {
+    if (!result || !result.success) {
       throw new ApiError(500, 'Failed to send WhatsApp message');
     }
+
+    // Create activity record for this message
+    await Activity.create({
+      lead: lead._id,
+      user: req.user._id,
+      type: 'whatsapp',
+      status: 'completed',
+      notes: `WhatsApp message sent: ${messageContent.substring(0, 50)}...`,
+      templateUsed: templateId || null,
+    });
 
     // Update phone number usage stats
     await updateNumberUsage(senderNumber._id);
@@ -90,13 +100,11 @@ const sendWhatsappMessage = asyncHandler(async (req, res, next) => {
     // Update lead's last contacted date
     lead.lastContacted = Date.now();
     lead.lastContactMethod = 'whatsapp';
-    await lead.save();
-
-    return res.status(200).json(
+    await lead.save();    return res.status(200).json(
       new ApiResponse(
         200,
         {
-          messageId: result.id,
+          messageId: result.message.id,
           recipient: lead.phone,
           sender: senderNumber.phoneNumber,
           content: messageContent,

@@ -254,6 +254,18 @@ const updateFollowUp = asyncHandler(async (req, res) => {
     runValidators: true,
   });
 
+  // If status changed, update the lead status to match the followup status
+  if (statusChanged && req.body.status) {
+    await Lead.findByIdAndUpdate(followUp.lead, { status: req.body.status });
+    await Activity.create({
+      lead: followUp.lead,
+      user: req.user._id,
+      type: 'note',
+      status: 'completed',
+      notes: `Lead status changed to ${req.body.status} due to follow-up status change`,
+    });
+  }
+
   // If status changed, update the lead status accordingly
   if (statusChanged) {
     // Find the associated lead
@@ -471,48 +483,28 @@ const completeFollowUp = asyncHandler(async (req, res, next) => {
 // @access  Private
 const getTodayFollowUps = asyncHandler(async (req, res) => {
   const today = new Date();
-today.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
 
-const tomorrow = new Date(today);
-tomorrow.setDate(today.getDate() + 1);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
 
-const followUps = await FollowUp.aggregate([
-  {
-    $match: {
-      assignedTo: req.user._id,
-      status: { $ne: 'completed' },
-      scheduled: {
-        $gte: today,
-        $lt: tomorrow
-      }
+  const followUps = await FollowUp.find({
+    assignedTo: req.user._id,
+    status: { $nin: ['completed', 'cancelled'] },
+    scheduled: {
+      $gte: today,
+      $lt: tomorrow
     }
-  },
-  {
-    $lookup: {
-      from: 'leads',
-      localField: 'lead',
-      foreignField: '_id',
-      as: 'lead'
-    }
-  },
-  {
-    $unwind: '$lead'
-  },
-  {
-    $project: {
-      scheduled: 1,
-      status: 1,
-      'lead._id': 1,
-      'lead.name': 1,
-      'lead.phone': 1,
-      'lead.email': 1,
-      'lead.company': 1,
-      'lead.status': 1
-    }
-  }
-]);
-
-  
+  })
+  .populate({
+    path: 'lead',
+    select: 'name phone email company status interestedIn assignedTo',
+  })
+  .populate({
+    path: 'assignedTo',
+    select: 'name email phone'
+  })
+  .sort('scheduled');
 
   return res
     .status(200)
@@ -531,39 +523,20 @@ const followUps = await FollowUp.aggregate([
 const getOverdueFollowUps = asyncHandler(async (req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0); // Midnight today
-
-  const followUps = await FollowUp.aggregate([
-    {
-      $match: {
-        assignedTo: req.user._id,
-        status: { $ne: 'completed' },
-        scheduled: { $lt: today } // Anything before today
-      }
-    },
-    {
-      $lookup: {
-        from: 'leads',
-        localField: 'lead',
-        foreignField: '_id',
-        as: 'lead'
-      }
-    },
-    {
-      $unwind: '$lead'
-    },
-    {
-      $project: {
-        scheduled: 1,
-        status: 1,
-        'lead._id': 1,
-        'lead.name': 1,
-        'lead.phone': 1,
-        'lead.email': 1,
-        'lead.company': 1,
-        'lead.status': 1
-      }
-    }
-  ]);
+  const followUps = await FollowUp.find({
+    assignedTo: req.user._id,
+    status: { $nin: ['completed', 'cancelled'] },
+    scheduled: { $lt: today } // Anything before today
+  })
+  .populate({
+    path: 'lead',
+    select: 'name phone email company status interestedIn assignedTo',
+  })
+  .populate({
+    path: 'assignedTo',
+    select: 'name email phone'
+  })
+  .sort('scheduled');
 
   return res.status(200).json(
     new ApiResponse(
@@ -584,25 +557,29 @@ const getUpcomingFollowUps = asyncHandler(async (req, res, next) => {
 
   const nextWeek = new Date(tomorrow);
   nextWeek.setDate(nextWeek.getDate() + 6); // total 7 days from today
-
   const followUps = await FollowUp.find({
     assignedTo: req.user._id,
     scheduled: {
       $gte: tomorrow,
       $lte: nextWeek,
     },
-    status: { $ne: 'completed' },
-  }).populate({
+    status: { $nin: ['completed', 'cancelled'] },
+  })
+  .populate({
     path: 'lead',
-    select: 'name phone email company status',
-  });
-
+    select: 'name phone email company status interestedIn assignedTo',
+  })
+  .populate({
+    path: 'assignedTo',
+    select: 'name email phone'
+  })
+  .sort('scheduled');
   return res.status(200).json(
     new ApiResponse(
       200,
       {
         count: followUps.length,
-        data: followUps,
+        followUps
       },
       'Upcoming followups fetched successfully'
     )

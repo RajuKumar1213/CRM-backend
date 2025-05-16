@@ -11,94 +11,67 @@ import { Activity } from '../models/Activity.models.js';
 dotenv.config();
 
 /**
- * Send a WhatsApp message using a template
- * @param {String} leadId - The ID of the lead
- * @param {String} userId - The ID of the user sending the message
- * @param {String} templateId - The ID of the template to use
- * @param {String} leadPhone - The phone number of the lead
- * @param {String} messageContent - The message content
- * @returns {Promise<Object>} - The sent message
+ * Send a WhatsApp message
+ * @param {Object} messageData - Contains all necessary data for sending a message
+ * @param {String} messageData.leadId - The ID of the lead
+ * @param {String} messageData.userId - The ID of the user sending the message
+ * @param {String} messageData.templateId - The ID of the template to use (optional)
+ * @param {String} messageData.senderPhone - The sender's phone number
+ * @param {String} messageData.recipientPhone - The recipient's phone number
+ * @param {String} messageData.messageContent - The message content
+ * @returns {Promise<Object>} - The response from WhatsApp API provider
  */
-export const sendWhatsAppMessage = async (
-  leadId,
-  userId,
-  templateId,
-  senderPhone,
-  messageContent
-) => {
+export const sendWhatsAppMessage = async (messageData) => {
+  const {
+    leadId,
+    userId,
+    templateId,
+    senderPhone,
+    recipientPhone,
+    messageContent
+  } = messageData;
+  
   let message = null; // Declare message outside try block
 
   try {
-    // Get lead, template, and company settings
-    const [lead, template, settings] = await Promise.all([
-      Lead.findById(leadId),
-      WhatsappTemplate.findById(templateId),
-      CompanySetting.findOne(),
-    ]);    if (!lead) {
-      throw new ApiError(404, `Lead not found with id ${leadId}`);
-    }
-    
-    // Convert old status values to new ones if needed
-    if (lead.status === 'closed-won') {
-      lead.status = 'won';
-      await lead.save();
-    }
-    if (lead.status === 'closed-lost') {
-      lead.status = 'lost';
-      await lead.save();
-    }
-    
-    if (!template && templateId) {
-      throw new ApiError(404, `Template not found with id ${templateId}`);
-    }
+    // Get company settings for provider info
+    const settings = await CompanySetting.findOne();
     if (!settings) {
       throw new ApiError(404, 'Company settings not found');
-    }    // Create WhatsApp message record with proper sentFrom
-    const phoneNumber = senderPhone || 'whatsapp:+14155238886'; // Fallback to Twilio sandbox
+    }
+    
+    // Validate required data
+    if (!senderPhone) {
+      throw new ApiError(400, 'Sender phone number is required');
+    }
+    
+    if (!recipientPhone) {
+      throw new ApiError(400, 'Recipient phone number is required');
+    }
+
+    if (!messageContent) {
+      throw new ApiError(400, 'Message content is required');
+    }
+      // Create WhatsApp message record
     message = await WhatsAppMessage.create({
       lead: leadId,
       user: userId,
       template: templateId || null,
       content: messageContent, 
-      status: 'sent',
-      sentFrom: phoneNumber,
-      sentTo: lead.phone,
+      status: 'queued',
+      sentFrom: senderPhone,
+      sentTo: recipientPhone,
     });
 
     if (!message) {
       throw new ApiError(500, 'Failed to create WhatsApp message');
     }
 
-         console.log(senderPhone, lead.phone, messageContent);
-
-    // Prepare API request based on provider
+    // Send message via configured provider
     let apiResponse;
     const provider = settings.whatsappApiProvider || 'twilio'; // Default to twilio
 
     switch (provider) {
-      case '360dialog':
-        if (!settings.whatsappApiKey || !settings.whatsappApiUrl) {
-          throw new ApiError(500, 'WhatsApp API not configured for 360dialog');
-        }
-        apiResponse = await axios.post(
-          settings.whatsappApiUrl,
-          {
-            recipient_type: 'individual',
-            to: lead.phone,
-            type: 'text',
-            text: {
-              body: messageContent,
-            },
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${settings.whatsappApiKey}`,
-              'Content-Type': 'application/json',
-            },
-          }
-        );
-        break;
-
       case 'twilio':
         const accountSid = process.env.TWILIO_ACCOUNT_SID;
         const authToken = process.env.TWILIO_AUTH_TOKEN;
@@ -107,13 +80,11 @@ export const sendWhatsAppMessage = async (
           throw new ApiError(500, 'Twilio credentials not configured');
         }
 
-   
-
         const client = twilio(accountSid, authToken);
         apiResponse = await client.messages.create({
           body: messageContent,
           from: `whatsapp:${senderPhone}`,
-          to: `whatsapp:${lead.phone}`,
+          to: `whatsapp:${recipientPhone}`,
         });
         break;
 
@@ -131,18 +102,11 @@ export const sendWhatsAppMessage = async (
       messageId: apiResponse?.sid || apiResponse?.data?.id || 'unknown',
     });
 
-    // Create activity record
-    await Activity.create({
-      lead: leadId,
-      user: userId,
-      type: 'whatsapp',
-      status: 'completed',
-      notes: `WhatsApp message sent: ${messageContent.substring(0, 50)}...`,
-      templateUsed: templateId || null,
-    });
-
-    return message;
-  } catch (error) {
+    return {
+      success: true,
+      message: message,
+      apiResponse: apiResponse
+    };  } catch (error) {
     console.error('Error sending WhatsApp message:', error);
 
     // Update message status to failed if it was created

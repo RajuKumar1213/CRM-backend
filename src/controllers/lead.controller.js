@@ -466,31 +466,50 @@ const getLeadFromWhatsapp = asyncHandler(async (req, res) => {
     //   Body,
     //   ProfileName,
     //   MessageSid,
-    // });
-
-    let lead = await Lead.findOne({ phone: phoneNumber });
-    let isNewLead = false;
-
-    if (!lead) {
+    // });    let lead = await Lead.findOne({ phone: phoneNumber });
+    let isNewLead = false;    if (!lead) {
       isNewLead = true;
       // Default name from profile or phone
       let name = ProfileName || phoneNumber;
+      let interestedIn = '';
+      let company = '';
+      let status = 'new';
 
-      // Try to extract name from Body
+      // Try to extract information from Body
       if (Body && typeof Body === 'string') {
-        const nameMatch = Body.match(/(?:my name is|I am|I'm) ([A-Za-z\s]+)/i);
+        // Extract name with improved patterns
+        const nameMatch = Body.match(/(?:my name is|I am|I'm|this is|name[:\s-]+|call me) ([A-Za-z\s.]+?)(?:\.|,|\s+(?:from|at|of|and|looking|interested|I'm|need|want|with)|\s*$)/i);
         if (nameMatch && nameMatch[1]) {
           name = nameMatch[1].trim();
         }
-      }
-
-      // Create the lead
+        
+        // Try to extract what they're interested in with improved patterns
+        const interestedMatch = Body.match(/(?:interested in|looking for|need|want|inquir(?:y|ing) about|asking about|question about|info(?:rmation)? (?:on|about)|details (?:on|about)) ([^\.]+?)(?:\.|$)/i);
+        if (interestedMatch && interestedMatch[1]) {
+          interestedIn = interestedMatch[1].trim();
+          // Set status to contacted since they've expressed interest
+          status = 'contacted';
+        }
+        
+        // Try to extract company name with improved patterns
+        const companyMatch = Body.match(/(?:from|with|at|company[:\s-]+|business[:\s-]+|work(?:ing)? (?:at|for|with)|represent(?:ing)?)[\s]+([A-Za-z0-9\s&.]+?)(?:\.|,|\s+(?:and|looking|interested|I'm|need|want)|\s*$)/i);
+        if (companyMatch && companyMatch[1] && !companyMatch[1].match(/^(a|the|my|our|their|this|that|from|with|at)$/i)) {
+          company = companyMatch[1].trim();
+        }
+      }      // Create the lead
       lead = new Lead({
         name,
         phone: phoneNumber,
         message: Body, // We already checked Body exists
         source: 'whatsapp',
         messageSid: MessageSid, // Store the MessageSid to prevent duplicates
+        interestedIn: interestedIn || undefined,
+        company: company || undefined,
+        status: status,
+        priority: interestedIn ? 'high' : 'medium', // Set higher priority if they've mentioned interests
+        lastContactMethod: 'whatsapp',
+        lastContacted: new Date(),
+        notes: `WhatsApp lead created on ${new Date().toLocaleString()}. Initial message: ${Body.substring(0, 100)}${Body.length > 100 ? '...' : ''}`
       });
 
       await lead.save();
@@ -499,16 +518,24 @@ const getLeadFromWhatsapp = asyncHandler(async (req, res) => {
         throw new ApiError(500, 'Failed to create lead');
       }
 
-      // Assign to employee
+      // Schedule an initial follow-up
+      let followUpInterval = 1; // Default: 1 day
       const nextEmployee = await assignLeadToNextEmployee(lead);
       if (nextEmployee) {
         lead.assignedTo = nextEmployee._id;
         await lead.save();
         console.log(`👨‍💼 Lead assigned to employee: ${nextEmployee.name}`);
+        
+        // Schedule a WhatsApp follow-up
+        await scheduleFollowUp(
+          lead,
+          nextEmployee._id,
+          'whatsapp', // Follow-up type specifically for WhatsApp leads
+          followUpInterval
+        );
       } else {
         console.warn('⚠️ No employee available for assignment');
-      }
-    } else {
+      }    } else {
       // Check if this exact message was already processed (by MessageSid)
       if (lead.messageSid === MessageSid) {
         // console.log(
@@ -518,19 +545,89 @@ const getLeadFromWhatsapp = asyncHandler(async (req, res) => {
       }
 
       // Update message history and MessageSid
-      lead.message += `\n${Body}`;
+      lead.message = lead.message ? `${lead.message}\n${Body}` : Body;
       lead.messageSid = MessageSid; // Update the MessageSid to the latest
+      lead.lastContactMethod = 'whatsapp';
+      lead.lastContacted = new Date();
+      
+      // Check if we can extract any additional information
+      if (Body && typeof Body === 'string') {
+        // Try to extract what they're interested in if not already set
+        if (!lead.interestedIn) {
+          const interestedMatch = Body.match(/(?:interested in|looking for|need|want|inquir(?:y|ing) about|asking about|question about|info(?:rmation)? (?:on|about)|details (?:on|about)) ([^\.]+?)(?:\.|$)/i);
+          if (interestedMatch && interestedMatch[1]) {
+            lead.interestedIn = interestedMatch[1].trim();
+            // Update priority based on interest
+            lead.priority = 'high';
+          }
+        }
+        
+        // Try to extract company name if not already set
+        if (!lead.company) {
+          const companyMatch = Body.match(/(?:from|with|at|company[:\s-]+|business[:\s-]+|work(?:ing)? (?:at|for|with)|represent(?:ing)?)[\s]+([A-Za-z0-9\s&.]+?)(?:\.|,|\s+(?:and|looking|interested|I'm|need|want)|\s*$)/i);
+          if (companyMatch && companyMatch[1] && !companyMatch[1].match(/^(a|the|my|our|their|this|that|from|with|at)$/i)) {
+            lead.company = companyMatch[1].trim();
+          }
+        }
+      }
+      
+      // Update the lead status if it's still 'new'
+      if (lead.status === 'new') {
+        lead.status = 'contacted';
+      }
+      
       await lead.save();
-    }
-
-    // Generate appropriate WhatsApp response
+    }    // Generate appropriate WhatsApp response
     const twiml = new MessagingResponse();
     if (isNewLead) {
-      twiml.message(
-        'Thank you for contacting us! One of our representatives will get in touch with you shortly.'
-      );
+      // Personalized welcome message for new leads
+      let welcomeMsg = `Thank you for contacting us, ${lead.name.split(' ')[0]}! One of our representatives will get in touch with you shortly.`;
+      
+      // Ask for additional information if missing
+      if (!lead.interestedIn) {
+        welcomeMsg += `\n\nTo help us serve you better, could you please let us know what you're interested in?`;
+      } else if (!lead.company) {
+        welcomeMsg += `\n\nMay we know which company you represent?`;
+      } else {
+        welcomeMsg += `\n\nWe look forward to discussing your interest in ${lead.interestedIn}.`;
+      }
+      
+      twiml.message(welcomeMsg);
+      
+      // Create an activity for the new lead
+      await Activity.create({
+        lead: lead._id,
+        user: lead.assignedTo || null,
+        type: 'whatsapp',
+        status: 'completed',
+        notes: 'New lead created from WhatsApp',
+      });
     } else {
-      twiml.message("Thanks for your message! We're working on your request.");
+      // Personalized response for returning leads
+      let responseMsg = `Thanks for your message, ${lead.name.split(' ')[0]}!`;
+      
+      // Add contextual information if available
+      if (lead.assignedTo) {
+        const assignedUser = await User.findById(lead.assignedTo);
+        if (assignedUser) {
+          responseMsg += ` ${assignedUser.name} will respond to you as soon as possible.`;
+        } else {
+          responseMsg += ` Our team will respond to you as soon as possible.`;
+        }
+      } else {
+        responseMsg += ` Our team will respond to you as soon as possible.`;
+      }
+      
+      twiml.message(responseMsg);
+      
+      // Create an activity for the follow-up message
+      await Activity.create({
+        lead: lead._id,
+        user: lead.assignedTo || null,
+        type: 'whatsapp',
+        status: 'completed',
+        notes: `Follow-up message received: ${Body.substring(0, 50)}${Body.length > 50 ? '...' : ''}`,
+      });
     }
 
     // Send response to WhatsApp

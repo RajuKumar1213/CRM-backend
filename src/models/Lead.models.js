@@ -1,8 +1,7 @@
 import mongoose from 'mongoose';
 
 const LeadSchema = new mongoose.Schema(
-  {
-    name: {
+  {    name: {
       type: String,
       required: [true, 'Please add a name'],
       trim: true,
@@ -14,6 +13,7 @@ const LeadSchema = new mongoose.Schema(
         /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
         'Please add a valid email',
       ],
+      required: false, // Making email optional for WhatsApp leads
     },
     phone: {
       type: String,
