@@ -27,11 +27,16 @@ connectDB()
 
 // Send WhatsApp to employee when a new lead is assigned
 Lead.watch().on('change', async (change) => {
-  if (change.operationType === 'insert' || change.operationType === 'update') {
+  // Only send notification for new leads or when assignedTo field changes
+  if (
+    change.operationType === 'insert' ||
+    (change.operationType === 'update' &&
+      change.updateDescription?.updatedFields?.assignedTo)
+  ) {
     const leadId = change.documentKey._id;
     const lead = await Lead.findById(leadId).populate('assignedTo');
-    
-    // Only proceed if lead has an assignedTo field and it's changed or new
+
+    // Only proceed if lead has an assignedTo field
     if (lead && lead.assignedTo) {
       const user = await User.findById(lead.assignedTo._id);
       if (!user || !user.phone) {
@@ -40,11 +45,14 @@ Lead.watch().on('change', async (change) => {
         );
         return;
       }
-      
+
+      // For new leads or specific assignedTo changes, send notification
       // If it's a WhatsApp lead, use specialized notification
       if (lead.source === 'whatsapp') {
         try {
-          const { sendLeadAssignmentNotification } = await import('./utils/whatsappNotifications.js');
+          const { sendLeadAssignmentNotification } = await import(
+            './utils/whatsappNotifications.js'
+          );
           await sendLeadAssignmentNotification(lead, user);
         } catch (err) {
           console.error(
@@ -154,7 +162,8 @@ cron.schedule('* * * * *', async () => {
     }).populate('assignedTo lead');
 
     // Get the Socket.IO instance
-    const io = getIO();    for (const followUp of upcomingFollowUps) {
+    const io = getIO();
+    for (const followUp of upcomingFollowUps) {
       if (followUp.lead && followUp.assignedTo) {
         // Send socket notification
         io.to(followUp.assignedTo._id.toString()).emit('notification', {
@@ -164,14 +173,25 @@ cron.schedule('* * * * *', async () => {
           data: followUp,
           createdAt: new Date(),
         });
-        
+
         // Send WhatsApp message based on lead source
         try {
-          const minutesRemaining = Math.round((followUp.scheduled - now) / 60000);
-            // If it's a WhatsApp lead or follow-up type is WhatsApp, use specialized notification
-          if (followUp.lead.source === 'whatsapp' || followUp.followUpType === 'whatsapp') {
-            const { sendFollowUpReminder } = await import('./utils/whatsappNotifications.js');
-            await sendFollowUpReminder(followUp, followUp.assignedTo, minutesRemaining);
+          const minutesRemaining = Math.round(
+            (followUp.scheduled - now) / 60000
+          );
+          // If it's a WhatsApp lead or follow-up type is WhatsApp, use specialized notification
+          if (
+            followUp.lead.source === 'whatsapp' ||
+            followUp.followUpType === 'whatsapp'
+          ) {
+            const { sendFollowUpReminder } = await import(
+              './utils/whatsappNotifications.js'
+            );
+            await sendFollowUpReminder(
+              followUp,
+              followUp.assignedTo,
+              minutesRemaining
+            );
           } else {
             // Use standard notification for other lead sources
             const senderPhone = await getNextAvailableNumber();
@@ -184,7 +204,7 @@ cron.schedule('* * * * *', async () => {
                 recipientPhone: followUp.assignedTo.phone,
                 messageContent: `Reminder: You have a follow-up scheduled with ${followUp.lead.name} in ${minutesRemaining} minutes.`,
               });
-              
+
               // Create activity for follow-up reminder to employee
               if (result && result.success) {
                 await Activity.create({

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import express from 'express';
 
 import { verifyJWT } from '../middleware/auth.middleware.js';
 import {
@@ -6,11 +7,11 @@ import {
   deleteLead,
   getActivities,
   getLead,
-  getLeadFromWhatsapp,
   getLeads,
   getUserLeads,
   updateLead,
 } from '../controllers/lead.controller.js';
+import { handleWhatsAppWebhook } from '../controllers/fixed-webhook.js';
 import { getFollowUps } from '../controllers/followUp.controller.js';
 
 const router = Router();
@@ -24,6 +25,11 @@ router.route('/delete/:leadId').delete(verifyJWT, deleteLead);
 router.route('/activities').get(verifyJWT, getActivities);
 router.route('/followups').get(verifyJWT, getFollowUps);
 
-router.route('/webhook').post(getLeadFromWhatsapp);
+// Twilio webhook doesn't use authentication since it's called by Twilio servers
+// Using a direct router.post() instead of router.route() for clarity
+router.post('/webhook/whatsapp/incoming', express.urlencoded({ extended: true }), handleWhatsAppWebhook);
+
+// Adding a second route for compatibility with client-side code
+router.post('/webhook', express.urlencoded({ extended: true }), handleWhatsAppWebhook);
 
 export default router;
